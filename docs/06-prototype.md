@@ -44,7 +44,7 @@ Notes:
 - **Vite + TypeScript, no framework.** Canvas 2D for drawing, reusing the style frame's drawing code (pieces, crayon) in plain grey-box colours.
 - **Physics:** Box2D v3 (compat build: no threads or SIMD needed, works in every browser) behind a small interface.
 - **Typed code:** TypeScript as in Fabricator, because most of this code is written by Claude, and types catch mistakes before play does.
-- **Testing on Thomas's phone:** the Vite dev server on the local network (as Wingnut Circus does). Later, optionally, a Cloudflare Pages preview URL.
+- **Testing on Thomas's phone:** https://fort-knocks.thomaswi1998.workers.dev (`npm run deploy`), or the Vite dev server on the local network.
 
 ## 3. Milestones
 Each milestone ends in something Thomas can play on his phone.

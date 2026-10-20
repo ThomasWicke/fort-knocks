@@ -1,0 +1,7 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Phase 6: the built client as static assets. Phase 7 adds the game rooms (partyserver Durable Objects) to this Worker.
+  "name": "fort-knocks",
+  "compatibility_date": "2026-10-19",
+  "assets": { "directory": "./dist", "not_found_handling": "single-page-application" }
+}

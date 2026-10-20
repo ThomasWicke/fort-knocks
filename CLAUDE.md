@@ -23,6 +23,7 @@ npm install
 npm run dev        # Vite on :5180, host: true, so a phone on the same Wi-Fi can open it
 npm run typecheck
 npm run build      # -> dist/
+npm run deploy     # build, then wrangler deploy -> https://fort-knocks.thomaswi1998.workers.dev
 ```
 In dev builds, `window.__fk` drives the game without a visible tab: `__fk.fire(pullX, pullY)` (pull in cells, max 2), `__fk.run(seconds)`, `__fk.reset()`.
 
@@ -33,7 +34,8 @@ In dev builds, `window.__fk` drives the game without a visible tab: `__fk.fire(p
 
 ## Infrastructure
 - GitHub: `git@github.com:ThomasWicke/fort-knocks.git`.
-- Multiplayer (Phase 7): Cloudflare Durable Objects through `partyserver`, as in `../fabricator`. PartyKit's shared zone no longer accepts new projects. Wrangler is logged in to Thomas's Cloudflare account.
+- **Hosting:** a Cloudflare Worker named `fort-knocks` with static assets (`wrangler.jsonc`), at https://fort-knocks.thomaswi1998.workers.dev. Not Pages: wrangler 4.151 folds new Pages projects into Workers, and the Worker is where the rooms go anyway.
+- **Multiplayer (Phase 7):** Durable Objects through `partyserver` in the same Worker (single origin), as in `../fabricator`. PartyKit's shared zone no longer accepts new projects. Wrangler is logged in to Thomas's Cloudflare account.
 
 ## Physics
 Box2D v3 via `box2d3-wasm` (compat build), behind a small physics interface, with Rapier as the fallback. The reasoning and the measurements are in `docs/06-prototype.md`. `dev/physics-spike/spike.mjs` runs the same fort in all three engines (`node spike.mjs`; `node spike.mjs debug` lists the pieces that fall during the settle).
