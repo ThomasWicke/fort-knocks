@@ -17,7 +17,17 @@ A live 1v1 physics duel for phones, close to classic Angry Birds. Two siblings b
 - **Generating art:** Claude runs the Codex CLI on Thomas's ChatGPT login, in isolated runs (`codex exec -i <reference> --ignore-user-config --ephemeral --sandbox read-only`, from an empty scratch folder). Codex saves images to `~/.codex/generated_images/<session>/`.
 - **Sprite cutouts:** sprites are generated on a magenta (#FF00FF) background and cut out offline (hue key plus despill). The magenta sources are in `docs/concept/sprites/`, the cutouts in `dev/style-frame/sprites/`.
 
+## Commands
+```bash
+npm install
+npm run dev        # Vite on :5180, host: true, so a phone on the same Wi-Fi can open it
+npm run typecheck
+npm run build      # -> dist/
+```
+In dev builds, `window.__fk` drives the game without a visible tab: `__fk.fire(pullX, pullY)` (pull in cells, max 2), `__fk.run(seconds)`, `__fk.reset()`.
+
 ## Layout
+- `client/`: the game (Vite root). `src/physics.ts` is the only file that touches Box2D; `src/fort.ts` holds the pieces, materials and test fort; `src/draw.ts` the grey-box drawing; `src/main.ts` the loop, input, camera and rules.
 - `docs/`: design documents and concept art (`docs/concept/`).
 - `dev/style-frame/`: the Phase 5.3 style frame. A static page; serve the folder over http, because the sprites don't load from file://.
 

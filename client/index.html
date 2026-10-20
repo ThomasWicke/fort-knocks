@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#F4E9D8">
+  <title>Fort Knocks · prototype</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #F4E9D8; overflow: hidden; overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+    #game { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
+    #bar { position: fixed; top: max(8px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right));
+      display: flex; justify-content: space-between; align-items: center; gap: 12px; pointer-events: none; font: 700 15px system-ui, sans-serif; color: #2E2A33; }
+    #bar button { pointer-events: auto; font: 700 14px system-ui, sans-serif; color: #fff; background: #4A4650; border: 2px solid #2E2A33; border-radius: 999px; padding: 6px 14px; box-shadow: 0 2px 0 #2E2A33; }
+    #bar button:active { transform: translateY(2px); box-shadow: none; }
+    #turn { position: fixed; inset: 0; display: none; place-items: center; background: #2E2A33; color: #F4E9D8; font: 700 20px system-ui, sans-serif; text-align: center; padding: 24px; }
+    @media (orientation: portrait) and (max-width: 700px) { #turn { display: grid; } }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="bar"><span id="hud"></span><button id="reset" type="button">New fort</button></div>
+  <div id="turn">Turn your phone sideways</div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

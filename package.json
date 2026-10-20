@@ -1,0 +1,20 @@
+{
+  "name": "fort-knocks",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Live 1v1 physics duel for phones: build a toy fort, knock theirs down, the floor is lava.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "box2d3-wasm": "5.2.0"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4"
+  }
+}

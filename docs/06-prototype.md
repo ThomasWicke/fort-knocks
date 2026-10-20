@@ -1,6 +1,6 @@
 # Phase 6: Grey-box prototype, "find the fun"
 
-Status: tech spike done, engine chosen (2026-10-20). Next: milestone M1.
+Status: tech spike done, engine chosen; **M1 (sandbox) playable** (2026-10-20). Next: Thomas plays M1 on his phone, then M2.
 
 **Goal:** answer the question no document can, which is whether this is fun. As cheaply as possible, before any production art or networking.
 
