@@ -1,69 +1,171 @@
-// Prototype M1, the sandbox: one fort on a rug, the rubber-band launcher, marbles, the lava rule.
-// Questions it answers: does shooting feel good, and is the collapse satisfying? (docs/06-prototype.md)
-import { initPhysics, World } from './physics';
-import { TEST_FORT, MATERIALS, bodyOf, valueOf, type Piece } from './fort';
-import { P, drawPiece, drawPlush, drawMarble, rrPath } from './draw';
+// Prototype M2: one complete match of The Siege, end to end. Both players build from the same draw, both forts settle,
+// then three volleys of two shots each, with the lava rising after every volley. Most plushies standing wins.
+// Pass and play on one phone, or against a bot. (docs/02-core-design.md §4, docs/06-prototype.md)
+import { initPhysics } from './physics';
+import { BOT_FORTS, BUDGET, makeDraw, type Draw, type Piece } from './fort';
+import { Builder } from './build';
+import { Cam, Range, aimAt, MAX_PULL, type Pull } from './range';
 
-// ---------- world layout (metres = cells, y up) ----------
-const G = 10, STEP = 1 / 60;
-const RUG = { x0: -0.3, x1: 10.3 };
-const LAVA_TOP = -0.3;
-const BOOK = { x: -14, y: 0.1, hw: 1.7, hh: 0.4 };
-const ANCHOR = { x: -13.6, y: 2.35 };            // between the pencil tops
-const MAX_PULL = 2.0, V_MAX = 20, MARBLE_R = 0.3;
-const VIEW = { x0: -17, x1: 12.5, y0: -2.2, y1: 11.3 };
-const PREVIEW_SHARE = 0.35;
-const LOST_FADE_MS = 1200;                       // crayon dots show the first 35% of the arc (04-systems)
-
+const VOLLEYS = 3, SHOTS = 2, VIEW = { x0: -17, x1: 12.5, y0: -2.2, y1: 11.3 }, BAR = 44;
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
-const hud = document.getElementById('hud')!;
+const barLeft = document.getElementById('bar-left')!, barRight = document.getElementById('bar-right')!;
+const overlay = document.getElementById('overlay')!;
 
-let world: World;
-let pieces: { piece: Piece; id: number; lost: boolean; out: boolean; lostAt: number; gone: boolean }[] = [];
-let marbleId = -1, state: 'aim' | 'flight' = 'aim', flightT = 0, shots = 0;
-let pull: { x: number; y: number } | null = null, pointerId = -1, dragFrom = { x: 0, y: 0 };
-let trail: [number, number][] = [], lastTrail: [number, number][] = [];
-let slowUntil = 0, acc = 0;
+type Team = 'blue' | 'green';
+interface Side { team: Team; name: string; bot: boolean; fort: Piece[]; range: Range | null }
+interface Match {
+  mode: 'pass' | 'bot'; draw: Draw; sides: [Side, Side];
+  volley: number; shooter: 0 | 1; shotsLeft: number; lava: number; lavaShown: number; started: number; busy: boolean;
+}
+let screen: 'menu' | 'build' | 'siege' | 'result' = 'menu';
+let match: Match | null = null, builder: Builder | null = null, buildDone: (() => void) | null = null;
+let clock = 0, boil = 0, cssW = 0, cssH = 0;
+const cam = new Cam(), tally: Record<Team, number> = { blue: 0, green: 0 };
+let pull: Pull | null = null, pointerId = -1, dragFrom = { x: 0, y: 0 }, botPull: Pull | null = null;
+const timers: { at: number; fn: () => void }[] = [];
+const later = (ms: number, fn: () => void) => { timers.push({ at: clock + ms, fn }); };
+const rng = Math.random;
 
-function build(): void {
-  world?.destroy();
-  world = new World(-G);
-  world.add({ x: 0, y: LAVA_TOP - 0.2, shapes: [{ kind: 'box', hw: 60, hh: 0.2 }], mat: MATERIALS.floor, fixed: true });
-  world.add({ x: (RUG.x0 + RUG.x1) / 2, y: -0.15, shapes: [{ kind: 'box', hw: (RUG.x1 - RUG.x0) / 2, hh: 0.15 }], mat: MATERIALS.floor, fixed: true });
-  world.add({ x: BOOK.x, y: BOOK.y, shapes: [{ kind: 'box', hw: BOOK.hw, hh: BOOK.hh }], mat: MATERIALS.floor, fixed: true });
-  pieces = TEST_FORT.map(piece => ({ piece, id: world.add(bodyOf(piece, 0)), lost: false, out: false, lostAt: 0, gone: false }));
-  marbleId = -1; state = 'aim'; shots = 0; lastTrail = []; trail = [];
-  // the settle: whatever falls, falls (docs/02-core-design.md)
-  for (let i = 0; i < 90; i++) world.step(STEP);
+// ---------- screens ----------
+function menu(): void {
+  screen = 'menu'; match = null; builder = null; timers.length = 0;
+  bar('', []);
+  show(`<h1>Fort Knocks</h1><p>Prototype · one match of The Siege</p>
+    <div class="row"><button id="m-pass">Pass and play</button><button id="m-bot">Play against a bot</button></div>
+    <p class="small">Build a fort from the toy box and put your three plushies on top. Then knock the other fort down: a plushie that touches the rug or the lava is out. Three volleys of two marbles each, and the lava rises after every volley. Most plushies standing wins.</p>`);
+  on('m-pass', () => newMatch('pass')); on('m-bot', () => newMatch('bot'));
+}
+function newMatch(mode: Match['mode']): void {
+  timers.length = 0;
+  const blue: Side = { team: 'blue', name: mode === 'bot' ? 'You' : 'Blue', bot: false, fort: [], range: null };
+  const green: Side = { team: 'green', name: mode === 'bot' ? 'Bot' : 'Green', bot: mode === 'bot', fort: [], range: null };
+  match = { mode, draw: makeDraw(rng), sides: [blue, green], volley: 1, shooter: 0, shotsLeft: SHOTS, lava: 0, lavaShown: 0, started: clock, busy: false };
+  if (mode === 'pass') passThen('Blue builds first', 'Green, look away while Blue builds.', () => build(0));
+  else build(0);
+}
+function build(i: 0 | 1): void {
+  const m = match!, side = m.sides[i];
+  screen = 'build'; hide();
+  builder = new Builder(side.team, m.draw, clock);
+  layout();
+  buildDone = () => {
+    side.fort = builder!.pieces.map(p => ({ ...p })); builder = null; buildDone = null;
+    if (i === 0 && m.mode === 'pass') passThen('Green builds', 'Blue, look away while Green builds. Same toy box, same budget.', () => build(1));
+    else if (i === 0) { m.sides[1].fort = BOT_FORTS[Math.floor(rng() * BOT_FORTS.length)].map(p => ({ ...p })); startSiege(); }
+    else startSiege();
+  };
+  buildBar();
+}
+function buildBar(): void {
+  const b = builder; if (!b || !match) return;
+  const side = match.sides.find(s => s.team === b.team)!, secs = Math.floor((clock - b.started) / 1000);
+  const left = `${side.name} ${side.name === 'You' ? 'build' : 'builds'} · budget ${b.budgetLeft} of ${BUDGET} · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  const missing = 3 - b.plushiesPlaced;
+  const key = `${left}|${!!b.testing}|${missing}`;
+  if (barRight.dataset.key === key) return;   // rebuild the bar only when something changed
+  barRight.dataset.key = key;
+  bar(left, b.testing
+    ? [['Back to building', () => { b.stopTest(); buildBar(); }]]
+    : [['Test', () => { b.startTest(); buildBar(); }], [b.ready ? 'Ready' : `Place ${missing} more plushie${missing === 1 ? '' : 's'}`, () => { if (b.ready) buildDone?.(); }]]);
+}
+function startSiege(): void {
+  const m = match!;
+  for (const s of m.sides) { s.range = new Range(s.fort, s.team); s.range.settle(3, clock); }   // both forts settle at once
+  screen = 'siege'; hide(); layout();
+  if (m.mode === 'pass') passThen('Blue shoots', `Volley 1 of ${VOLLEYS}. Hand the phone to Blue.`, beginTurn);
+  else beginTurn();
+}
+const target = (): Range => match!.sides[1 - match!.shooter].range!;
+function beginTurn(): void {
+  const m = match!, shooter = m.sides[m.shooter], range = target();
+  m.shotsLeft = SHOTS; m.busy = false;
+  range.onShotDone = () => { m.shotsLeft--; status(); if (m.shotsLeft > 0) { if (shooter.bot) later(900, botShot); } else later(900, endTurn); };
+  status();
+  if (shooter.bot) later(1200, botShot);
+}
+function endTurn(): void {
+  const m = match!;
+  if (m.shooter === 0) {
+    m.shooter = 1;
+    if (m.mode === 'pass') passThen('Green shoots', `Volley ${m.volley} of ${VOLLEYS}. Hand the phone to Green.`, beginTurn);
+    else beginTurn();
+    return;
+  }
+  // end of the volley: the lava rises one cell, then the score is checked
+  m.busy = true; m.lava += 1; status('The lava rises');
+  later(1800, () => {
+    const wiped = m.sides.some(s => s.range!.standing() === 0);
+    if (wiped || m.volley >= VOLLEYS) return result();
+    m.volley++; m.shooter = 0;
+    if (m.mode === 'pass') passThen('Blue shoots', `Volley ${m.volley} of ${VOLLEYS}. Hand the phone to Blue.`, beginTurn);
+    else beginTurn();
+  });
+}
+function botShot(): void {
+  const m = match!, range = target(), aims = range.plushTargets();
+  if (screen !== 'siege' || range.state !== 'aim' || m.shotsLeft <= 0) return;
+  const t = aims.length ? aims[Math.floor(rng() * aims.length)] : { x: 5, y: 3 };
+  let p: Pull | null = null;
+  for (let tries = 0; tries < 8 && !p; tries++) p = aimAt(t.x + (rng() - 0.5) * 0.6, t.y + (rng() - 0.3) * 0.6, 32 + rng() * 26);
+  p ??= { x: 1.4, y: 1.0 };
+  // a decent but human bot: up to 7% of power and 3.5° of angle off (it wiped a fort in four shots at 4% and 1.7°)
+  const ang = Math.atan2(p.y, p.x) + (rng() - 0.5) * 0.12, mag = Math.min(MAX_PULL, Math.hypot(p.x, p.y) * (1 + (rng() - 0.5) * 0.14));
+  const final = { x: Math.cos(ang) * mag, y: Math.sin(ang) * mag }, t0 = clock;
+  const pullStep = () => {   // the bot pulls back visibly before letting go
+    const f = Math.min(1, (clock - t0) / 700);
+    botPull = { x: final.x * f, y: final.y * f };
+    if (f < 1) later(16, pullStep); else later(250, () => { botPull = null; range.fire(final); });
+  };
+  pullStep();
+}
+function result(): void {
+  const m = match!, [a, b] = m.sides, sa = a.range!.standing(), sb = b.range!.standing();
+  const dealtA = b.range!.destruction(), dealtB = a.range!.destruction();   // what each side knocked off the other's fort
+  const winner = sa !== sb ? (sa > sb ? a : b) : dealtA !== dealtB ? (dealtA > dealtB ? a : b) : null;
+  if (winner) tally[winner.team]++;
+  const mins = (clock - m.started) / 60000;
+  screen = 'result'; bar('', []);
+  show(`<h1>${winner ? (m.mode === 'bot' && winner.team === 'blue' ? 'You win' : `${winner.name} wins`) : 'Draw'}</h1>
+    <p>Plushies standing: ${a.name} ${sa} · ${b.name} ${sb}${sa === sb ? ' (tie, decided by destruction)' : ''}</p>
+    <p>Knocked off: ${Math.round(dealtA * 100)}% of ${m.mode === 'bot' ? "the bot's" : `${b.name}'s`} fort · ${Math.round(dealtB * 100)}% of ${m.mode === 'bot' ? 'yours' : `${a.name}'s`}</p>
+    <p class="small">Match time ${mins.toFixed(1)} min · tonight: Blue ${tally.blue}, Green ${tally.green}</p>
+    <div class="row"><button id="r-again">Rematch</button><button id="r-menu" class="quiet">Menu</button></div>`);
+  on('r-again', () => newMatch(m.mode)); on('r-menu', menu);
+}
+function status(extra?: string): void {
+  const m = match!, s = m.sides[m.shooter], [a, b] = m.sides;
+  const you = m.mode === 'bot', who = s.bot ? `The bot is shooting at your fort` : `${you ? 'Your turn' : `${s.name} shoots`} · shot ${SHOTS - m.shotsLeft + 1} of ${SHOTS}`;
+  bar(`Volley ${m.volley}/${VOLLEYS} · ${extra ?? (m.shotsLeft > 0 ? who : '…')} · plushies ${a.name} ${a.range!.standing()} – ${b.name} ${b.range!.standing()}`, [['Menu', menu]]);
+}
+function passThen(title: string, text: string, next: () => void): void {
+  show(`<h1>${title}</h1><p>${text}</p><div class="row"><button id="p-go">Ready</button></div>`);
+  on('p-go', () => { hide(); next(); });
 }
 
-// ---------- camera ----------
-let k = 30, ox = 0, oy = 0, cssW = 0, cssH = 0;
-function resize(): void {
-  const dpr = Math.min(window.devicePixelRatio || 1, 3);
-  cssW = canvas.clientWidth; cssH = canvas.clientHeight;
-  canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  k = Math.min(cssW / (VIEW.x1 - VIEW.x0), cssH / (VIEW.y1 - VIEW.y0));
-  ox = (cssW - (VIEW.x1 - VIEW.x0) * k) / 2 - VIEW.x0 * k;
-  oy = cssH - (cssH - (VIEW.y1 - VIEW.y0) * k) / 2 + VIEW.y0 * k;
+// ---------- DOM helpers ----------
+function bar(left: string, buttons: [string, () => void][]): void {
+  barLeft.textContent = left; barRight.replaceChildren();
+  for (const [label, fn] of buttons) { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = fn; barRight.append(b); }
 }
-const sx = (x: number) => ox + x * k, sy = (y: number) => oy - y * k;
-const wx = (px: number) => (px - ox) / k, wy = (py: number) => (oy - py) / k;
+function show(html: string): void { overlay.innerHTML = `<div class="card">${html}</div>`; overlay.hidden = false; }
+function hide(): void { overlay.hidden = true; }
+function on(id: string, fn: () => void): void { document.getElementById(id)!.onclick = fn; }
 
-// ---------- input: drag back anywhere on the left half, release to fire ----------
-function launchVelocity(p: { x: number; y: number }): { x: number; y: number } {
-  return { x: (p.x / MAX_PULL) * V_MAX, y: (p.y / MAX_PULL) * V_MAX };
-}
+// ---------- input ----------
 canvas.addEventListener('pointerdown', e => {
-  if (state !== 'aim' || pointerId !== -1 || e.clientX > cssW * 0.55) return;
+  if (pointerId !== -1) return;
+  if (screen === 'build' && builder) { pointerId = e.pointerId; canvas.setPointerCapture(e.pointerId); builder.down(e.offsetX, e.offsetY); return; }
+  if (screen !== 'siege' || !match || match.busy || match.sides[match.shooter].bot || match.shotsLeft <= 0 || target().state !== 'aim') return;
+  if (e.offsetX > cssW * 0.55) return;
   pointerId = e.pointerId; canvas.setPointerCapture(e.pointerId);
-  pull = { x: 0, y: 0 }; dragFrom = { x: wx(e.offsetX), y: wy(e.offsetY) };
+  pull = { x: 0, y: 0 }; dragFrom = { x: cam.wx(e.offsetX), y: cam.wy(e.offsetY) };
 });
 canvas.addEventListener('pointermove', e => {
-  if (e.pointerId !== pointerId || !pull) return;
-  let dx = dragFrom.x - wx(e.offsetX), dy = dragFrom.y - wy(e.offsetY);   // pulling back aims forward
+  if (e.pointerId !== pointerId) return;
+  if (screen === 'build' && builder) { builder.move(e.offsetX, e.offsetY); return; }
+  if (!pull) return;
+  let dx = dragFrom.x - cam.wx(e.offsetX), dy = dragFrom.y - cam.wy(e.offsetY);   // pulling back aims forward
   const len = Math.hypot(dx, dy);
   if (len > MAX_PULL) { dx *= MAX_PULL / len; dy *= MAX_PULL / len; }
   pull = { x: dx, y: dy };
@@ -71,146 +173,58 @@ canvas.addEventListener('pointermove', e => {
 const release = (e: PointerEvent) => {
   if (e.pointerId !== pointerId) return;
   pointerId = -1;
-  if (pull && Math.hypot(pull.x, pull.y) > 0.35) fire(pull);
+  if (screen === 'build' && builder) { builder.up(e.offsetX, e.offsetY); buildBar(); return; }
+  if (pull && screen === 'siege') target().fire(pull);
   pull = null;
 };
 canvas.addEventListener('pointerup', release);
-canvas.addEventListener('pointercancel', e => { if (e.pointerId === pointerId) { pointerId = -1; pull = null; } });
-
-function pouch(): { x: number; y: number } { return pull ? { x: ANCHOR.x - pull.x, y: ANCHOR.y - pull.y } : { ...ANCHOR }; }
-function fire(p: { x: number; y: number }): void {
-  const v = launchVelocity(p), at = pouch();
-  marbleId = world.add({ x: at.x, y: at.y, shapes: [{ kind: 'circle', r: MARBLE_R }], mat: MATERIALS.marble, bullet: true, vx: v.x, vy: v.y });
-  state = 'flight'; flightT = 0; trail = [];
-}
-
-document.getElementById('reset')!.addEventListener('click', build);
-
-// ---------- rules ----------
-function judge(now: number): void {
-  for (const p of pieces) {
-    if (p.gone) continue;
-    const t = world.transform(p.id);
-    if (p.piece.type === 'plush') {
-      if (!p.out && t.y < 0.62) { p.out = true; slowUntil = now + 900; }   // a plushie on the rug or the floor is out
-    } else if (!p.lost && t.y < 1.5 && (t.x < RUG.x0 || t.x > RUG.x1)) { p.lost = true; p.lostAt = now; }   // knocked off the rug
-    if (p.lost && now - p.lostAt > LOST_FADE_MS) { world.remove(p.id); p.gone = true; }   // lost pieces dissolve (crayon smoke later)
-  }
-  if (state !== 'flight') return;
-  const m = world.transform(marbleId);
-  if (flightT < 3 && trail.length < 400) trail.push([m.x, m.y]);
-  const resting = flightT > 1 && !world.awake(marbleId) && pieces.every(p => p.gone || !world.awake(p.id));
-  if (resting || flightT > 8 || m.x > 40 || m.x < -40) {
-    world.remove(marbleId); marbleId = -1; state = 'aim'; shots++; lastTrail = trail;
-  }
-}
-
-// ---------- drawing ----------
-let boil = 0;
-function draw(): void {
-  ctx.fillStyle = P.wall; ctx.fillRect(0, 0, cssW, cssH);
-  ctx.fillStyle = P.wall2; ctx.fillRect(0, sy(1.4), cssW, sy(0.9) - sy(1.4));
-  ctx.fillStyle = P.floor; ctx.fillRect(0, sy(0.9), cssW, cssH);
-  // lava: a flat grey-box band with a moving wavy top (the crayon version is in dev/style-frame)
-  ctx.beginPath(); ctx.moveTo(0, cssH);
-  for (let px = 0; px <= cssW + 12; px += 12) ctx.lineTo(px, sy(LAVA_TOP) + Math.sin(px * 0.04 + boil) * 2.5);
-  ctx.lineTo(cssW, cssH); ctx.closePath(); ctx.fillStyle = P.lava; ctx.fill();
-  ctx.strokeStyle = P.lavaRed; ctx.lineWidth = 3; ctx.stroke();
-  // rug
-  const rx = sx(RUG.x0), rw = (RUG.x1 - RUG.x0) * k, ry = sy(0), rh = 0.3 * k;
-  ctx.fillStyle = P.rug; ctx.fillRect(rx, ry, rw, rh);
-  ctx.fillStyle = P.rug2; for (let i = rx + 4; i < rx + rw - 4; i += k * 0.5) ctx.fillRect(i, ry, k * 0.22, rh);
-  ctx.strokeStyle = P.ink; ctx.lineWidth = 2; ctx.strokeRect(rx, ry, rw, rh);
-  // launcher book and back pencil + back band
-  const bk = rrPath(sx(BOOK.x - BOOK.hw), sy(BOOK.y + BOOK.hh), BOOK.hw * 2 * k, BOOK.hh * 2 * k, 3);
-  ctx.fillStyle = P.bookOx; ctx.fill(bk); ctx.fillStyle = P.cream; ctx.fillRect(sx(BOOK.x - BOOK.hw + 0.3), sy(BOOK.y + BOOK.hh - 0.12), (BOOK.hw * 2 - 0.4) * k, (BOOK.hh * 2 - 0.24) * k);
-  ctx.lineWidth = 2.2; ctx.strokeStyle = P.ink; ctx.stroke(bk);
-  const backTop = { x: ANCHOR.x - 0.38, y: ANCHOR.y }, frontTop = { x: ANCHOR.x + 0.38, y: ANCHOR.y };
-  pencil(backTop.x, true);
-  const pp = pouch();
-  if (state === 'aim') band(backTop, pp);
-  // pieces and plushies
-  for (const p of pieces) {
-    if (p.gone) continue;
-    const t = world.transform(p.id);
-    ctx.save(); ctx.translate(sx(t.x), sy(t.y)); ctx.rotate(-t.angle);
-    if (p.lost) ctx.globalAlpha = Math.max(0, 1 - (clock - p.lostAt) / LOST_FADE_MS);
-    if (p.piece.type === 'plush') drawPlush(ctx, p.piece.plush!, p.piece.w * k, p.piece.h * k, p.out);
-    else drawPiece(ctx, p.piece, k);
-    ctx.restore();
-  }
-  if (marbleId >= 0) { const m = world.transform(marbleId); ctx.save(); ctx.translate(sx(m.x), sy(m.y)); ctx.rotate(-m.angle); drawMarble(ctx, MARBLE_R * k); ctx.restore(); }
-  // the loaded marble, front pencil, front band
-  if (state === 'aim') { ctx.save(); ctx.translate(sx(pp.x), sy(pp.y)); drawMarble(ctx, MARBLE_R * k); ctx.restore(); }
-  pencil(frontTop.x, false);
-  if (state === 'aim') band(frontTop, pp); else band(frontTop, backTop);
-  // last shot's trail (faint) and the aim preview
-  dots(lastTrail, 2, 'rgba(74,70,80,0.35)');
-  if (pull && Math.hypot(pull.x, pull.y) > 0.35) dots(previewArc(pp, launchVelocity(pull)), 3, P.graphite);
-  // status
-  const out = pieces.filter(p => p.out).length, total = pieces.reduce((s, p) => s + valueOf(p.piece.type), 0);
-  const lost = pieces.filter(p => p.lost).reduce((s, p) => s + valueOf(p.piece.type), 0);
-  hud.textContent = `Plushies out ${out}/3 · Knocked off ${Math.round((100 * lost) / total)}% · Shots ${shots}`;
-}
-function pencil(x: number, dim: boolean): void {
-  const pw = 0.32 * k, top = sy(ANCHOR.y + 0.35), bottom = sy(BOOK.y + BOOK.hh), px = sx(x) - pw / 2;
-  const body = rrPath(px, top + 0.5 * k, pw, bottom - top - 0.5 * k, 1.5);
-  ctx.fillStyle = dim ? '#C99A05' : P.toyYellow; ctx.fill(body); ctx.lineWidth = 2; ctx.strokeStyle = P.ink; ctx.stroke(body);
-  ctx.beginPath(); ctx.moveTo(px, top + 0.5 * k); ctx.lineTo(px + pw / 2, top); ctx.lineTo(px + pw, top + 0.5 * k); ctx.closePath();
-  ctx.fillStyle = P.wood; ctx.fill(); ctx.stroke();
-}
-function band(a: { x: number; y: number }, b: { x: number; y: number }): void {
-  ctx.lineCap = 'round'; ctx.strokeStyle = P.ink; ctx.lineWidth = 0.18 * k + 2.5;
-  ctx.beginPath(); ctx.moveTo(sx(a.x), sy(a.y)); ctx.lineTo(sx(b.x), sy(b.y)); ctx.stroke();
-  ctx.strokeStyle = P.toyRed; ctx.lineWidth = 0.18 * k; ctx.stroke();
-}
-function previewArc(p0: { x: number; y: number }, v: { x: number; y: number }): [number, number][] {
-  const pts: [number, number][] = [];
-  let len = 0, prev = p0;
-  const all: [number, number, number][] = [];
-  for (let t = 0; t < 4; t += 0.01) {
-    const p = { x: p0.x + v.x * t, y: p0.y + v.y * t - 0.5 * G * t * t };
-    len += Math.hypot(p.x - prev.x, p.y - prev.y); prev = p; all.push([p.x, p.y, len]);
-    if (p.y < 0 || p.x > VIEW.x1) break;
-  }
-  const show = len * PREVIEW_SHARE;
-  let next = 0.6;
-  for (const [x, y, l] of all) { if (l > show) break; if (l >= next) { pts.push([x, y]); next += 0.55; } }
-  return pts;
-}
-function dots(pts: [number, number][], r: number, col: string): void {
-  ctx.fillStyle = col;
-  pts.forEach(([x, y], i) => { if (i % 3) return; ctx.beginPath(); ctx.arc(sx(x), sy(y), r, 0, Math.PI * 2); ctx.fill(); });
-}
+canvas.addEventListener('pointercancel', release);
 
 // ---------- loop ----------
-let last = performance.now(), clock = 0;   // clock: game time in ms, so tests can advance it without a visible tab
-function tick(dt: number): void {
-  clock += dt * 1000;
-  if (clock < slowUntil) { world.step(dt * 0.3); if (state === 'flight') flightT += dt * 0.3; }   // slow motion when a plushie goes in
-  else {
-    acc += dt;
-    while (acc >= STEP) { world.step(STEP); acc -= STEP; if (state === 'flight') flightT += STEP; }
-  }
-  judge(clock);
-  boil += dt * 3;
+function layout(): void {
+  const dpr = Math.min(window.devicePixelRatio || 1, 3);
+  cssW = canvas.clientWidth; cssH = canvas.clientHeight;
+  canvas.width = Math.round(cssW * dpr); canvas.height = Math.round(cssH * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cam.fit(VIEW, { x: 0, y: BAR, w: cssW, h: cssH - BAR });
+  builder?.layout(cssW, cssH, BAR);
 }
+function tick(dt: number): void {
+  clock += dt * 1000; boil += dt * 3;
+  for (let i = timers.length - 1; i >= 0; i--) if (timers[i].at <= clock) { const t = timers.splice(i, 1)[0]; t.fn(); }
+  if (screen === 'build') { builder?.tick(dt); buildBar(); }
+  if (screen === 'siege' && match) {
+    match.lavaShown += Math.sign(match.lava - match.lavaShown) * Math.min(Math.abs(match.lava - match.lavaShown), dt * 0.8);
+    for (const s of match.sides) s.range!.tick(dt, clock, match.lavaShown);
+  }
+}
+function draw(): void {
+  if (screen === 'build' && builder) builder.draw(ctx, boil);
+  else if ((screen === 'siege' || screen === 'result') && match) target().draw(ctx, cam, { pull: pull ?? botPull, lava: match.lavaShown, boil, clock, launcher: true, w: cssW, h: cssH });
+  else { ctx.fillStyle = '#F4E9D8'; ctx.fillRect(0, 0, cssW, cssH); }
+}
+let last = performance.now();
 function frame(now: number): void {
   tick(Math.min(0.05, (now - last) / 1000)); last = now;
   draw();
   requestAnimationFrame(frame);
 }
 
-// Dev hook for automated checks: __fk.fire(pullX, pullY) with a pull in cells (max 2), __fk.run(seconds).
+// Dev hook for automated checks without a visible tab.
 if (import.meta.env.DEV) Object.assign(window, { __fk: {
-  fire: (x: number, y: number) => { if (state === 'aim') fire({ x, y }); },
-  run: (sec: number) => { for (let i = 0; i < sec * 60; i++) tick(1 / 60); draw(); return hud.textContent; },
-  reset: () => { build(); draw(); },
+  start: (mode: Match['mode']) => { newMatch(mode); document.getElementById('p-go')?.click(); },
+  load: (i: number) => { builder?.load(BOT_FORTS[i]); buildBar(); },
+  ready: () => { if (builder?.ready) buildDone?.(); },
+  go: () => document.getElementById('p-go')?.click(),
+  fire: (x: number, y: number) => { if (screen === 'siege') target().fire({ x, y }); },
+  run: (sec: number) => { for (let i = 0; i < sec * 60; i++) tick(1 / 60); draw(); return `${screen} · ${barLeft.textContent}`; },
+  state: () => ({ screen, volley: match?.volley, shooter: match?.shooter, shotsLeft: match?.shotsLeft, overlay: overlay.hidden ? '' : overlay.textContent?.trim().slice(0, 200) }),
 } });
 
 (async () => {
   await initPhysics();
-  resize(); build();
-  new ResizeObserver(resize).observe(canvas);
+  layout();
+  new ResizeObserver(layout).observe(canvas);
+  menu();
   requestAnimationFrame(frame);
 })();

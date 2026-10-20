@@ -1,6 +1,6 @@
 # Phase 6: Grey-box prototype, "find the fun"
 
-Status: tech spike done, engine chosen; **M1 (sandbox) playable** (2026-10-20). Next: Thomas plays M1 on his phone, then M2.
+Status: M1 and **M2 (one complete match) playable** at https://fort-knocks.thomaswi1998.workers.dev (2026-10-20). Next: Thomas plays whole matches and judges the fun.
 
 **Goal:** answer the question no document can, which is whether this is fun. As cheaply as possible, before any production art or networking.
 
@@ -47,6 +47,20 @@ Notes:
 - **Testing on Thomas's phone:** https://fort-knocks.thomaswi1998.workers.dev (`npm run deploy`), or the Vite dev server on the local network.
 
 ## 3. Milestones
+**Reordered on 2026-10-20 (Thomas):** M1 proved the feel of the shot, but whether the game is fun can only be judged on a whole match. So M2 became **one complete match, end to end**, before abilities, modes or polish.
+
+**M2 as built:**
+- The Siege with three volleys of two marbles, the lava rising one cell per volley, and an early end when a fort has no plushies left.
+- The build screen: the shared draw and the budget, drag to place, tap to turn, drag back to the box to return, the rules drawn live, and Test.
+- The result screen with tonight's tally and Rematch.
+- Pass and play on one phone, or against a bot. The bot builds one of three legal forts and aims at a random plushie with human-sized errors.
+- **Not yet:** ammo abilities (marbles only), repair and tape, a build timer (the clock counts up so we learn how long building takes, for H1), crayon art and sound.
+
+**Rule changes from building it:**
+- **The open-sky funnel is 30° from vertical,** not 45°. With 45°, two tall towers couldn't stand side by side, which worked against pillar 2.
+- **The build height is capped at 7 cells,** not 12. A landscape phone's height is the limit, and the tallest bot fort reaches 6.
+
+The original plan, kept for reference:
 Each milestone ends in something Thomas can play on his phone.
 
 | | What | Answers |

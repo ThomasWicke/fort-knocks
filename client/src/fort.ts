@@ -1,5 +1,5 @@
-// Pieces, materials and the test fort. Units: 1 cell = 1 m; x from the rug's left edge, y up from the rug top.
-// Numbers are starting values from docs/04-systems.md (weights: card 0.2, domino 0.6, block 1, plushie 0.5, book 3).
+// Pieces, materials, the toy box, the build rules and the forts the bot can build.
+// Units: 1 cell = 1 m; x from the rug's left edge, y up from the rug top. Numbers from docs/04-systems.md.
 import type { BodySpec, Material, Shape } from './physics';
 
 export type PieceType = 'block' | 'long' | 'arch' | 'tri' | 'bookLie' | 'bookStand' | 'domStand' | 'domLie' | 'cardFlat' | 'cardTent' | 'plush';
@@ -27,13 +27,96 @@ export const MATERIALS: Record<Family | 'marble' | 'floor', Material> = {
 export const familyOf = (t: PieceType): Family =>
   t === 'cardFlat' || t === 'cardTent' ? 'card' : t === 'domStand' || t === 'domLie' ? 'domino' : t === 'bookLie' || t === 'bookStand' ? 'book' : t === 'plush' ? 'plush' : 'block';
 
-// Prices from docs/04-systems.md; destruction is measured as a share of what was built.
-export const valueOf = (t: PieceType): number =>
-  t === 'long' || t === 'arch' ? 3 : familyOf(t) === 'block' ? 2 : familyOf(t) === 'book' ? 3 : familyOf(t) === 'plush' ? 0 : 1;
-
 export const CARD_T = 0.12;   // physics thickness of a card; drawn thinner
 
-// Shapes in body-local coordinates (origin = centre of the piece's box, y up).
+// ---------- the toy box ----------
+export type TrayKind = 'card' | 'tent' | 'domino' | 'block' | 'tri' | 'long' | 'arch' | 'book';
+export const TRAY_ORDER: TrayKind[] = ['card', 'tent', 'domino', 'block', 'tri', 'long', 'arch', 'book'];
+export const TRAY: Record<TrayKind, { price: number; make: () => Omit<Piece, 'x' | 'y'> }> = {
+  card: { price: 1, make: () => ({ type: 'cardFlat', w: 2, h: CARD_T }) },
+  tent: { price: 1, make: () => ({ type: 'cardTent', w: 1.5, h: 1.4 }) },
+  domino: { price: 1, make: () => ({ type: 'domStand', w: 0.5, h: 2 }) },
+  block: { price: 2, make: () => ({ type: 'block', w: 1, h: 1 }) },
+  tri: { price: 2, make: () => ({ type: 'tri', w: 1, h: 1 }) },
+  long: { price: 3, make: () => ({ type: 'long', w: 2, h: 1 }) },
+  arch: { price: 3, make: () => ({ type: 'arch', w: 2, h: 1 }) },
+  book: { price: 3, make: () => ({ type: 'bookLie', w: 3, h: 0.5 }) },
+};
+export function trayKindOf(p: Piece): TrayKind | null {
+  switch (p.type) {
+    case 'cardFlat': return 'card'; case 'cardTent': return 'tent'; case 'domStand': case 'domLie': return 'domino';
+    case 'block': return 'block'; case 'tri': return 'tri'; case 'long': return 'long'; case 'arch': return 'arch';
+    case 'bookLie': case 'bookStand': return 'book'; default: return null;
+  }
+}
+export const priceOf = (p: Piece): number => { const k = trayKindOf(p); return k ? TRAY[k].price : 0; };
+
+/** Tap to turn: long blocks, books and dominoes stand up or lie down. Returns null if the piece can't turn. */
+export function turned(p: Piece): Piece | null {
+  const swap = { ...p, w: p.h, h: p.w };
+  if (p.type === 'long') return swap;
+  if (p.type === 'bookLie') return { ...swap, type: 'bookStand' };
+  if (p.type === 'bookStand') return { ...swap, type: 'bookLie' };
+  if (p.type === 'domStand') return { ...swap, type: 'domLie' };
+  if (p.type === 'domLie') return { ...swap, type: 'domStand' };
+  return null;
+}
+
+// Paint is decoration only; it rotates so a fort looks like a toy box, not a spreadsheet.
+const BLOCK_PAINTS: Paint[] = ['toyRed', 'toyYellow', 'wood', 'cream'], BOOK_PAINTS: Paint[] = ['bookOx', 'bookMustard', 'bookPlum'];
+const SYMS = ['circle', 'star', 'triangle'] as const;
+export function decorate(p: Piece, i: number): Piece {
+  const f = familyOf(p.type);
+  if (f === 'block') return { ...p, paint: p.type === 'tri' ? 'wood' : BLOCK_PAINTS[i % 4], sym: SYMS[i % 3] };
+  if (f === 'book') return { ...p, paint: BOOK_PAINTS[i % 3] };
+  if (f === 'domino') return { ...p, pips: [1 + (i * 5) % 6, 1 + (i * 3 + 2) % 6] as [number, number] };
+  return p;
+}
+
+// ---------- the draw: identical for both players (the duplicate-bridge rule) ----------
+export type Draw = Record<TrayKind, number>;
+export const BUDGET = 30;
+const RANGES: Record<TrayKind, [number, number]> = { card: [3, 5], tent: [2, 3], domino: [4, 6], block: [4, 7], tri: [1, 2], long: [2, 3], arch: [1, 2], book: [2, 4] };
+export function makeDraw(rng: () => number): Draw {
+  const d = {} as Draw;
+  for (const k of TRAY_ORDER) { const [a, b] = RANGES[k]; d[k] = a + Math.floor(rng() * (b - a + 1)); }
+  return d;
+}
+
+// ---------- build rules (docs/02-core-design.md §2, 04-systems.md §4) ----------
+export const RUG_W = 10, CAP = 7, MIN_PLUSH_Y = 3,   // CAP 7 (not 12 as in 04-systems): a phone's height is the limit
+   PLUSHIES: Plushie[] = ['brumm', 'hoppel', 'socke'];
+const E = 1e-6;
+export const overlaps = (a: Piece, b: Piece): boolean =>
+  a.x < b.x + b.w - E && b.x < a.x + a.w - E && a.y < b.y + b.h - E && b.y < a.y + a.h - E;
+/** The open-sky funnel: a V opening upward from the plushie's feet, 30° from vertical. Nothing may be inside it.
+ *  (04-systems started at 45°; in the prototype that kept two tall towers from standing side by side.) */
+export const FUNNEL_SLOPE = Math.tan(Math.PI / 6);
+export function inFunnel(pl: Piece, p: Piece): boolean {
+  if (p === pl || p.y + p.h <= pl.y + E) return false;
+  const hwTop = 0.5 + (p.y + p.h - pl.y) * FUNNEL_SLOPE, cx = pl.x + 0.5;
+  return p.x < cx + hwTop - E && p.x + p.w > cx - hwTop + E;
+}
+/** Where a piece lands if dropped at x: on the highest surface under yHint (physics is off while building). */
+export function dropY(p: Piece, others: Piece[]): number {
+  let top = 0;
+  for (const o of others) if (o.x < p.x + p.w - E && p.x < o.x + o.w - E && o.y + o.h <= p.y + 0.3) top = Math.max(top, o.y + o.h);
+  return top;
+}
+export function fits(p: Piece, others: Piece[]): boolean {
+  return p.x >= -E && p.x + p.w <= RUG_W + E && p.y >= -E && p.y + p.h <= CAP + E && others.every(o => !overlaps(p, o));
+}
+export interface Problems { lowPlushies: Piece[]; blocked: Piece[]; missing: number }
+export function problems(fort: Piece[]): Problems {
+  const pl = fort.filter(p => p.type === 'plush');
+  return {
+    lowPlushies: pl.filter(p => p.y < MIN_PLUSH_Y - E),
+    blocked: pl.filter(q => fort.some(p => inFunnel(q, p))),
+    missing: 3 - pl.length,
+  };
+}
+
+// ---------- physics bodies ----------
 export function shapesOf(p: Piece): Shape[] {
   const hw = p.w / 2, hh = p.h / 2;
   switch (p.type) {
@@ -52,34 +135,31 @@ export function shapesOf(p: Piece): Shape[] {
       return [{ kind: 'box', hw, hh }];
   }
 }
-
 export function bodyOf(p: Piece, rugX: number): BodySpec {
   return { x: rugX + p.x + p.w / 2, y: p.y + p.h / 2, shapes: shapesOf(p), mat: MATERIALS[familyOf(p.type)] };
 }
 
-// The fort from the style frame, with the two fixes the spike found (card tent as one piece; triangle on top of the domino).
-export const TEST_FORT: Piece[] = [
-  { type: 'bookLie', x: 0, y: 0, w: 3, h: 0.5, paint: 'bookOx' },
-  { type: 'bookLie', x: 0, y: 0.5, w: 3, h: 0.5, paint: 'bookMustard' },
-  { type: 'block', x: 0, y: 1, w: 1, h: 1, paint: 'toyRed', sym: 'circle' },
-  { type: 'block', x: 2, y: 1, w: 1, h: 1, paint: 'wood', sym: 'star' },
-  { type: 'bookLie', x: 0, y: 2, w: 3, h: 0.5, paint: 'bookPlum' },
-  { type: 'block', x: 1, y: 2.5, w: 1, h: 1, paint: 'cream', sym: 'triangle' },
-  { type: 'arch', x: 3.5, y: 0, w: 2, h: 1, paint: 'toyRed' },
-  { type: 'domStand', x: 3.55, y: 1, w: 0.5, h: 2, pips: [2, 5] },
-  { type: 'domStand', x: 4.95, y: 1, w: 0.5, h: 2, pips: [6, 1] },
-  { type: 'cardFlat', x: 3.4, y: 3, w: 2.2, h: CARD_T },
-  { type: 'cardTent', x: 3.75, y: 3 + CARD_T, w: 1.5, h: 1.37 },
-  { type: 'cardFlat', x: 3.5, y: 3 + CARD_T + 1.37, w: 2, h: CARD_T },
-  { type: 'long', x: 6, y: 0, w: 2, h: 1, paint: 'toyYellow', sym: 'circle' },
-  { type: 'long', x: 8, y: 0, w: 2, h: 1, paint: 'toyRed', sym: 'star' },
-  { type: 'bookStand', x: 6.4, y: 1, w: 0.5, h: 3, paint: 'bookMustard' },
-  { type: 'bookStand', x: 9.1, y: 1, w: 0.5, h: 3, paint: 'bookOx' },
-  { type: 'block', x: 7.3, y: 1, w: 1, h: 1, paint: 'toyYellow', sym: 'triangle' },
-  { type: 'domLie', x: 7.05, y: 2, w: 1.5, h: 0.4, pips: [3, 4] },
-  { type: 'tri', x: 7.3, y: 2.4, w: 1, h: 1, paint: 'wood' },
-  { type: 'bookLie', x: 6.5, y: 4, w: 3, h: 0.5, paint: 'bookPlum' },
-  { type: 'plush', x: 1, y: 3.5, w: 1, h: 1, plush: 'brumm' },
-  { type: 'plush', x: 4, y: 3 + 2 * CARD_T + 1.37, w: 1, h: 1, plush: 'hoppel' },
-  { type: 'plush', x: 7.55, y: 4.5, w: 1, h: 1, plush: 'socke' },
+// ---------- forts the bot builds (all legal and within the budget; they ignore the draw's counts) ----------
+type Spec = [PieceType, number, number, number, number, Plushie?];
+const fort = (specs: Spec[]): Piece[] => specs.map(([type, x, y, w, h, plush], i) => decorate({ type, x, y, w, h, plush }, i));
+const T = CARD_T;
+export const BOT_FORTS: Piece[][] = [
+  fort([   // three towers (the style-frame fort, trimmed to the budget)
+    ['block', 0, 0, 1, 1], ['block', 2, 0, 1, 1], ['bookLie', 0, 1, 3, 0.5], ['block', 1, 1.5, 1, 1], ['block', 1, 2.5, 1, 1],
+    ['arch', 3.5, 0, 2, 1], ['domStand', 3.55, 1, 0.5, 2], ['domStand', 4.95, 1, 0.5, 2], ['cardFlat', 3.4, 3, 2.2, T], ['cardTent', 3.75, 3 + T, 1.5, 1.4], ['cardFlat', 3.5, 3 + T + 1.4, 2, T],
+    ['long', 6.5, 0, 1, 2], ['long', 8.5, 0, 1, 2], ['bookLie', 6.5, 2, 3, 0.5], ['block', 7.5, 2.5, 1, 1],
+    ['plush', 1, 3.5, 1, 1, 'brumm'], ['plush', 4, 3 + 2 * T + 1.4, 1, 1, 'hoppel'], ['plush', 7.5, 3.5, 1, 1, 'socke'],
+  ]),
+  fort([   // three columns
+    ['block', 0.5, 0, 1, 1], ['block', 0.5, 1, 1, 1], ['block', 0.5, 2, 1, 1], ['block', 1.5, 0, 1, 1],
+    ['long', 4.5, 0, 1, 2], ['block', 4.5, 2, 1, 1], ['block', 4.5, 3, 1, 1], ['domStand', 4, 0, 0.5, 2], ['domStand', 5.5, 0, 0.5, 2],
+    ['bookStand', 7.5, 0, 0.5, 3], ['bookStand', 9.5, 0, 0.5, 3], ['bookLie', 7, 3, 3, 0.5], ['block', 8.25, 0, 1, 1],
+    ['plush', 0.5, 3, 1, 1, 'brumm'], ['plush', 4.5, 4, 1, 1, 'hoppel'], ['plush', 8, 3.5, 1, 1, 'socke'],
+  ]),
+  fort([   // tall middle, low wings
+    ['block', 0, 0, 1, 1], ['block', 0, 1, 1, 1], ['block', 0, 2, 1, 1], ['block', 9, 0, 1, 1], ['block', 9, 1, 1, 1], ['block', 9, 2, 1, 1],
+    ['bookLie', 3, 0, 3, 0.5], ['bookLie', 3, 0.5, 3, 0.5], ['long', 3.5, 1, 1, 2], ['long', 4.5, 1, 1, 2], ['bookLie', 3, 3, 3, 0.5],
+    ['cardTent', 3.75, 3.5, 1.5, 1.4], ['cardFlat', 3.5, 4.9, 2, T],
+    ['plush', 0, 3, 1, 1, 'brumm'], ['plush', 4, 4.9 + T, 1, 1, 'hoppel'], ['plush', 9, 3, 1, 1, 'socke'],
+  ]),
 ];

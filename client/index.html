@@ -6,19 +6,31 @@
   <meta name="theme-color" content="#F4E9D8">
   <title>Fort Knocks · prototype</title>
   <style>
-    html, body { margin: 0; height: 100%; background: #F4E9D8; overflow: hidden; overscroll-behavior: none; -webkit-user-select: none; user-select: none; }
+    html, body { margin: 0; height: 100%; background: #F4E9D8; overflow: hidden; overscroll-behavior: none; -webkit-user-select: none; user-select: none; font-family: system-ui, -apple-system, sans-serif; color: #2E2A33; }
     #game { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
-    #bar { position: fixed; top: max(8px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right));
-      display: flex; justify-content: space-between; align-items: center; gap: 12px; pointer-events: none; font: 700 15px system-ui, sans-serif; color: #2E2A33; }
-    #bar button { pointer-events: auto; font: 700 14px system-ui, sans-serif; color: #fff; background: #4A4650; border: 2px solid #2E2A33; border-radius: 999px; padding: 6px 14px; box-shadow: 0 2px 0 #2E2A33; }
-    #bar button:active { transform: translateY(2px); box-shadow: none; }
-    #turn { position: fixed; inset: 0; display: none; place-items: center; background: #2E2A33; color: #F4E9D8; font: 700 20px system-ui, sans-serif; text-align: center; padding: 24px; }
+    #bar { position: fixed; top: 0; left: 0; right: 0; height: 44px; box-sizing: border-box; padding: 0 max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left));
+      display: flex; justify-content: space-between; align-items: center; gap: 12px; pointer-events: none; font: 700 14px system-ui, sans-serif; }
+    #bar-left { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    #bar-right { display: flex; gap: 8px; flex: none; }
+    button { pointer-events: auto; font: 700 14px system-ui, sans-serif; color: #fff; background: #4A4650; border: 2px solid #2E2A33; border-radius: 999px; padding: 6px 14px; box-shadow: 0 2px 0 #2E2A33; cursor: pointer; }
+    button:active { transform: translateY(2px); box-shadow: none; }
+    #overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(46,42,51,0.55); padding: 16px; }
+    #overlay[hidden] { display: none; }
+    .card { background: #FBF6EC; border: 2px solid #2E2A33; border-radius: 16px; box-shadow: 0 4px 0 #2E2A33; padding: 18px 22px; max-width: 520px; text-align: center; }
+    .card h1 { margin: 0 0 6px; font-size: 26px; }
+    .card p { margin: 6px 0; }
+    .card .small { font-size: 13px; color: #6B6370; }
+    .card .row { display: flex; gap: 10px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
+    .card button { background: #2F6FDE; font-size: 16px; padding: 9px 18px; }
+    .card button.quiet { background: #4A4650; }
+    #turn { position: fixed; inset: 0; display: none; place-items: center; background: #2E2A33; color: #F4E9D8; font: 700 20px system-ui, sans-serif; text-align: center; padding: 24px; z-index: 5; }
     @media (orientation: portrait) and (max-width: 700px) { #turn { display: grid; } }
   </style>
 </head>
 <body>
   <canvas id="game"></canvas>
-  <div id="bar"><span id="hud"></span><button id="reset" type="button">New fort</button></div>
+  <div id="bar"><span id="bar-left"></span><span id="bar-right"></span></div>
+  <div id="overlay" hidden></div>
   <div id="turn">Turn your phone sideways</div>
   <script type="module" src="/src/main.ts"></script>
 </body>
