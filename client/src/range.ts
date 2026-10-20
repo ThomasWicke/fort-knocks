@@ -1,7 +1,7 @@
 // One range: a fort on its rug, the attacker's launcher in front of it, the lava around it.
 // Each fort has its own range and physics world, and it keeps its ruins between volleys.
 import { World } from './physics';
-import { MATERIALS, RUG_W, bodyOf, priceOf, type Piece } from './fort';
+import { MATERIALS, RUG_W, bodyOf, priceOf, type Piece, type Plushie } from './fort';
 import { P, drawPiece, drawPlush, drawMarble, rrPath } from './draw';
 
 export const G = 10, STEP = 1 / 60;
@@ -11,7 +11,8 @@ export const BOOK = { x: -14, y: 0.1, hw: 1.7, hh: 0.4 };
 export const ANCHOR = { x: -13.6, y: 2.35 };   // between the pencil tops
 export const MAX_PULL = 2.0, V_MAX = 16, MARBLE_R = 0.3, MIN_PULL = 0.35;   // V_MAX was 20; 16 still reaches the back of the rug
 const PREVIEW_SHARE = 0.35;                      // crayon dots show the first 35% of the arc (04-systems)
-const LOST_FADE_MS = 1200;
+const LOST_FADE = 72;                            // steps (1.2 s) a knocked-off piece fades before it's removed
+const SLOW = { steps: 54, rate: 0.3 };           // a plushie going out: 54 steps (0.9 s) at 0.3× speed
 
 export class Cam {
   k = 30; ox = 0; oy = 0;
@@ -27,36 +28,47 @@ export class Cam {
   wy = (py: number) => (this.oy - py) / this.k;
 }
 
-interface Entry { piece: Piece; id: number; lost: boolean; out: boolean; lostAt: number; gone: boolean }
+// out: the plushie no longer counts (it touched down, or the lava took it). down: it touched the rug or the floor,
+// which is what starts the slow motion. Kept apart so slow motion depends on the physics alone, never on the lava.
+interface Entry { piece: Piece; id: number; lost: boolean; out: boolean; down: boolean; lostAt: number; gone: boolean }
 export type Pull = { x: number; y: number };
+/** One marble fired at this range, and what it did (for the game log and replays). state: the fort's fingerprint
+ *  when it was fired, so a replay can tell whether it is still exactly the game that was played. */
+export interface ShotRec { step: number; pull: Pull; state: number; impact: [number, number] | null; out: Plushie[]; lost: number }
 
+// Replays need the same shot to do the same thing twice. So the world only ever advances in counted steps:
+// everything that touches physics (fire, removing a knocked-off piece, slow motion) happens at a step number,
+// never at a wall-clock time, and a shot is fully described by the step it was fired at and its pull.
 export class Range {
   world = new World(-G);
   entries: Entry[];
   marbleId = -1;
   state: 'aim' | 'flight' = 'aim';
   flightT = 0;
+  /** Physics steps taken since the fort was built. */
+  steps = 0;
+  shots: ShotRec[] = [];
+  /** Plushies the rising lava took (not a shot). */
+  drowned: Plushie[] = [];
   private impactAt = -1;
   private lastSpeed = 0;
   trail: [number, number][] = [];
   lastTrail: [number, number][] = [];
-  slowUntil = 0;
+  private slow = 0;
   private acc = 0;
   /** Called once per finished shot. */
-  onShotDone: (() => void) | null = null;
-  /** Called when a plushie goes out (for the slow-motion beat). */
-  onOut: (() => void) | null = null;
+  onShotDone: ((shot: ShotRec) => void) | null = null;
 
   constructor(blueprint: Piece[], public team: 'blue' | 'green') {
     const w = this.world;
     w.add({ x: 0, y: LAVA_TOP - 0.2, shapes: [{ kind: 'box', hw: 60, hh: 0.2 }], mat: MATERIALS.floor, fixed: true });
     w.add({ x: (RUG.x0 + RUG.x1) / 2, y: -0.15, shapes: [{ kind: 'box', hw: (RUG.x1 - RUG.x0) / 2, hh: 0.15 }], mat: MATERIALS.floor, fixed: true });
     w.add({ x: BOOK.x, y: BOOK.y, shapes: [{ kind: 'box', hw: BOOK.hw, hh: BOOK.hh }], mat: MATERIALS.floor, fixed: true });
-    this.entries = blueprint.map(piece => ({ piece, id: w.add(bodyOf(piece, 0)), lost: false, out: false, lostAt: 0, gone: false }));
+    this.entries = blueprint.map(piece => ({ piece, id: w.add(bodyOf(piece, 0)), lost: false, out: false, down: false, lostAt: 0, gone: false }));
   }
 
   /** The settle: physics switches on, whatever falls, falls. */
-  settle(seconds = 3, clock = 0): void { for (let i = 0; i < seconds * 60; i++) { this.world.step(STEP); this.judge(clock, 0, false); } }
+  settle(seconds = 3): void { for (let i = 0; i < seconds * 60; i++) this.step(0, false); }
 
   pouch(pull: Pull | null): { x: number; y: number } { return pull ? { x: ANCHOR.x - pull.x, y: ANCHOR.y - pull.y } : { ...ANCHOR }; }
 
@@ -65,40 +77,69 @@ export class Range {
     const at = this.pouch(pull), v = launchVelocity(pull);
     this.marbleId = this.world.add({ x: at.x, y: at.y, shapes: [{ kind: 'circle', r: MARBLE_R }], mat: MATERIALS.marble, bullet: true, vx: v.x, vy: v.y });
     this.state = 'flight'; this.flightT = 0; this.trail = []; this.impactAt = -1; this.lastSpeed = Math.hypot(v.x, v.y);
+    this.shots.push({ step: this.steps, pull: { ...pull }, state: this.fingerprint(), impact: null, out: [], lost: 0 });
     return true;
   }
 
-  tick(dt: number, clock: number, lava: number): void {
-    if (clock < this.slowUntil) { this.world.step(dt * 0.3); if (this.state === 'flight') this.flightT += dt * 0.3; }   // slow motion when a plushie goes in
-    else {
-      this.acc += dt;
-      while (this.acc >= STEP) { this.world.step(STEP); this.acc -= STEP; if (this.state === 'flight') this.flightT += STEP; }
-    }
-    this.judge(clock, lava, true);
+  /** Advance by real time dt. Slow motion only stretches time: each step stays the same physics either way.
+   *  stopAt: never step past this step number (replays fire exactly there). */
+  tick(dt: number, lava: number, stopAt = Infinity): void {
+    this.acc = Math.min(this.acc + dt, 0.25);
+    while (this.acc >= STEP && this.steps < stopAt) { this.acc -= STEP; this.step(lava, true); }
+    if (this.steps >= stopAt) this.acc = 0;
   }
 
-  private judge(clock: number, lava: number, live: boolean): void {
+  /** Step at once (no drawing) up to step number n. Replays use it to skip quiet stretches. */
+  stepTo(n: number, lava: number): void { while (this.steps < n) this.step(lava, true); this.acc = 0; }
+
+  private step(lava: number, live: boolean): void {
+    // slow motion: a smaller step per frame. The step sizes follow from the physics alone, so replays match.
+    const h = this.slow > 0 ? STEP * SLOW.rate : STEP;
+    if (this.slow > 0) this.slow--;
+    this.world.step(h); this.steps++;
+    if (this.state === 'flight') this.flightT += h;
+    this.judge(lava, live);
+  }
+
+  private judge(lava: number, live: boolean): void {
+    const shot = live ? this.shots[this.shots.length - 1] : undefined;
     for (const e of this.entries) {
       if (e.gone) continue;
       const t = this.world.transform(e.id);
       if (e.piece.type === 'plush') {
-        // out on the rug or the floor, or when the risen lava reaches its feet
-        if (!e.out && (t.y < 0.62 || t.y - 0.5 < lava - 0.02)) { e.out = true; if (live) { this.slowUntil = clock + 900; this.onOut?.(); } }
-      } else if (!e.lost && t.y < 1.5 && (t.x < RUG.x0 || t.x > RUG.x1)) { e.lost = true; e.lostAt = clock; }   // knocked off the rug
-      if (e.lost && clock - e.lostAt > LOST_FADE_MS) { this.world.remove(e.id); e.gone = true; }
+        if (!e.down && t.y < 0.62) {   // on the rug or the floor
+          e.down = true;
+          if (live) this.slow = SLOW.steps;
+          if (!e.out) { e.out = true; shot?.out.push(e.piece.plush!); }
+        } else if (!e.out && t.y - 0.5 < lava - 0.02) { e.out = true; this.drowned.push(e.piece.plush!); }   // the risen lava reached its feet
+      } else if (!e.lost && t.y < 1.5 && (t.x < RUG.x0 || t.x > RUG.x1)) {   // knocked off the rug
+        e.lost = true; e.lostAt = this.steps;
+        if (shot) shot.lost++;
+      }
+      if (e.lost && this.steps - e.lostAt > LOST_FADE) { this.world.remove(e.id); e.gone = true; }
     }
     if (this.state !== 'flight') return;
     const m = this.world.transform(this.marbleId), v = this.world.velocity(this.marbleId), speed = Math.hypot(v.x, v.y);
     if (this.impactAt < 0) this.trail.push([m.x, m.y]);   // the arc up to the first hit
     // the first hit: a sudden loss of speed, or reaching the fort
-    if (this.impactAt < 0 && (speed < this.lastSpeed * 0.75 || m.x >= RUG.x0 - 0.2 || m.y < 0)) this.impactAt = this.flightT;
+    if (this.impactAt < 0 && (speed < this.lastSpeed * 0.75 || m.x >= RUG.x0 - 0.2 || m.y < 0)) {
+      this.impactAt = this.flightT;
+      if (shot) shot.impact = [Math.round(m.x * 100) / 100, Math.round(m.y * 100) / 100];
+    }
     this.lastSpeed = speed;
     // the next marble is ready shortly after the hit, while the fort is still settling (playtest 1: waiting for rest was too slow)
     const done = (this.impactAt >= 0 && this.flightT - this.impactAt > 1.6) || !this.world.awake(this.marbleId) || this.flightT > 6 || Math.abs(m.x) > 40;
     if (done) {
       this.world.remove(this.marbleId); this.marbleId = -1; this.state = 'aim'; this.lastTrail = this.trail;
-      this.onShotDone?.();
+      this.onShotDone?.(this.shots[this.shots.length - 1]);
     }
+  }
+
+  /** Where everything is, folded into one number. Equal only if every piece is where it was in the other run. */
+  fingerprint(): number {
+    let f = 0;
+    for (const e of this.entries) if (!e.gone) { const t = this.world.transform(e.id); f += t.x * 1.31 + t.y * 0.73 + t.angle * 0.17; }
+    return Math.round(f * 1e4) / 1e4;
   }
 
   /** Nothing in the fort is moving any more. */
@@ -114,7 +155,7 @@ export class Range {
     return this.entries.filter(e => e.piece.type === 'plush' && !e.out).map(e => this.world.transform(e.id));
   }
 
-  draw(c: CanvasRenderingContext2D, cam: Cam, o: { pull: Pull | null; lava: number; boil: number; clock: number; launcher: boolean; w: number; h: number }): void {
+  draw(c: CanvasRenderingContext2D, cam: Cam, o: { pull: Pull | null; lava: number; boil: number; launcher: boolean; w: number; h: number }): void {
     const { sx, sy, k } = cam;
     c.fillStyle = P.wall; c.fillRect(0, 0, o.w, o.h);
     c.fillStyle = P.wall2; c.fillRect(0, sy(1.4), o.w, sy(0.9) - sy(1.4));
@@ -136,7 +177,7 @@ export class Range {
       if (e.gone) continue;
       const t = this.world.transform(e.id);
       c.save(); c.translate(sx(t.x), sy(t.y)); c.rotate(-t.angle);
-      if (e.lost) c.globalAlpha = Math.max(0, 1 - (o.clock - e.lostAt) / LOST_FADE_MS);
+      if (e.lost) c.globalAlpha = Math.max(0, 1 - (this.steps - e.lostAt) / LOST_FADE);
       if (e.piece.type === 'plush') drawPlush(c, e.piece.plush!, e.piece.w * k, e.piece.h * k, e.out, this.team === 'blue' ? P.blue : P.green);
       else drawPiece(c, e.piece, k);
       c.restore();

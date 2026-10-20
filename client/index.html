@@ -31,7 +31,9 @@
     .card .how { text-align: left; margin: 8px 0; padding-left: 1.2em; display: grid; gap: 6px; font-size: 14px; }
     .card .row { display: flex; gap: 10px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
     .card button { background: #2F6FDE; font-size: 16px; padding: 9px 18px; }
-    .card button.quiet { background: #4A4650; }
+    .card button.quiet, .card a.btn.quiet { background: #4A4650; }
+    .card a { color: #2F6FDE; font-weight: 700; }
+    .card a.btn { display: inline-block; color: #fff; text-decoration: none; font-size: 16px; padding: 9px 18px; background: #2F6FDE; border: 2px solid #2E2A33; border-radius: 999px; box-shadow: 0 2px 0 #2E2A33; }
     #turn { position: fixed; inset: 0; display: none; place-items: center; background: #2E2A33; color: #F4E9D8; font: 700 20px system-ui, sans-serif; text-align: center; padding: 24px; z-index: 5; }
     @media (orientation: portrait) and (max-width: 700px) { #turn { display: grid; } }
   </style>

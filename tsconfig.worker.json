@@ -1,0 +1,17 @@
+// The Worker (worker.ts). Separate from tsconfig.json because the Cloudflare runtime globals
+// (worker-configuration.d.ts, from `npm run cf-typegen`) conflict with the DOM lib the client uses.
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022"],
+    "types": [],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noUnusedLocals": true
+  },
+  "include": ["worker.ts", "worker-configuration.d.ts"]
+}

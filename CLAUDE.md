@@ -24,17 +24,31 @@ npm run dev        # Vite on :5180, host: true, so a phone on the same Wi-Fi can
 npm run typecheck
 npm run build      # -> dist/
 npm run deploy     # build, then wrangler deploy -> https://fort-knocks.thomaswi1998.workers.dev
+npm run dev:worker # build, local D1, wrangler dev on :8787: the real Worker with the game log, for testing saves and replays
+npx wrangler d1 migrations apply fort-knocks --remote   # after adding a file to migrations/
+npx wrangler d1 execute fort-knocks --remote --command "SELECT id, created_at, summary FROM games ORDER BY id DESC LIMIT 20"
 ```
-In dev builds, `window.__fk` drives the game without a visible tab: `__fk.fire(pullX, pullY)` (pull in cells, max 2), `__fk.run(seconds)`, `__fk.reset()`.
+On the Vite dev server and on localhost, `window.__fk` drives the game without a visible tab:
+- `__fk.start('bot' | 'pass')`, `__fk.load(i)` (a bot fort into the builder), `__fk.ready()`, `__fk.go()` (pass screens)
+- `__fk.fire(pullX, pullY)` (pull in cells, max 2), `__fk.run(seconds)`, `__fk.state()`
+- `__fk.log()` (the current game log), `__fk.watch(log)` (replay a log), `__fk.watching()` (replay progress and drift)
+
+The Vite dev server doesn't save games, because it has no API. Built code does: deployed, or `npm run dev:worker` into the local D1.
 
 ## Layout
-- `client/`: the game (Vite root). `src/physics.ts` is the only file that touches Box2D; `src/fort.ts` holds the pieces, materials and test fort; `src/draw.ts` the grey-box drawing; `src/main.ts` the loop, input, camera and rules.
+- `client/`: the game (Vite root, two pages: `index.html` the game, `games.html` the past games).
+  - `src/physics.ts` is the only file that touches Box2D.
+  - `src/fort.ts`: pieces, materials, the toy box, build rules, bot forts. `src/draw.ts`: the grey-box drawing.
+  - `src/build.ts`: the build screen. `src/range.ts`: one fort's world and the launcher, stepped deterministically.
+  - `src/main.ts`: the match flow, input, replays (`?watch=<id>`). `src/record.ts`: the game log. `src/games.ts`: the past-games page.
+- `worker.ts`: the Cloudflare Worker. `/api/games` on D1, everything else from `dist/`. `migrations/`: the D1 schema.
 - `docs/`: design documents and concept art (`docs/concept/`).
 - `dev/style-frame/`: the Phase 5.3 style frame. A static page; serve the folder over http, because the sprites don't load from file://.
 
 ## Infrastructure
 - GitHub: `git@github.com:ThomasWicke/fort-knocks.git`.
 - **Hosting:** a Cloudflare Worker named `fort-knocks` with static assets (`wrangler.jsonc`), at https://fort-knocks.thomaswi1998.workers.dev. Not Pages: wrangler 4.151 folds new Pages projects into Workers, and the Worker is where the rooms go anyway.
+- **Game log:** every match on the deployed game is saved in the D1 database `fort-knocks` (binding `DB`, table `games`, one JSON log per match, see `client/src/record.ts`). Thomas quotes game numbers in feedback. Read a game with `wrangler d1 execute … --remote` or `GET /api/games/<id>`, and watch it at `/?watch=<id>`. Replays are exact because the ranges only advance in counted steps (`range.ts`); a replay's end card reports drift.
 - **Multiplayer (Phase 7):** Durable Objects through `partyserver` in the same Worker (single origin), as in `../fabricator`. PartyKit's shared zone no longer accepts new projects. Wrangler is logged in to Thomas's Cloudflare account.
 
 ## Physics

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#F4E9D8">
+  <title>Fort Knocks · past games</title>
+  <link rel="icon" href="/icons/favicon-64.png">
+  <style>
+    :root { --ink: #2E2A33; --wall: #F4E9D8; --paper: #FBF6EC; --muted: #6B6370; --line: #E6D6BE; --blue: #2F6FDE; --green: #0F7B5F; --red: #E63B2E; }
+    html { background: var(--wall); }
+    body { margin: 0; font: 15px/1.45 system-ui, -apple-system, sans-serif; color: var(--ink); background: var(--wall);
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) 32px max(16px, env(safe-area-inset-left)); }
+    main { max-width: 980px; margin: 0 auto; display: grid; gap: 16px; }
+    header { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    h1 { margin: 0; font-size: 28px; }
+    h2 { margin: 0; font-size: 20px; }
+    a { color: var(--blue); font-weight: 700; }
+    .btn { display: inline-block; font: 700 14px system-ui, sans-serif; color: #fff; background: var(--blue); border: 2px solid var(--ink); border-radius: 999px;
+      padding: 6px 14px; box-shadow: 0 2px 0 var(--ink); text-decoration: none; cursor: pointer; }
+    .btn.quiet { background: #4A4650; }
+    .card { background: var(--paper); border: 2px solid var(--ink); border-radius: 14px; box-shadow: 0 3px 0 var(--ink); padding: 14px 16px; display: grid; gap: 10px; min-width: 0; }
+    .head { display: flex; justify-content: space-between; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+    .meta { color: var(--muted); font-size: 13px; }
+    .summary { font-weight: 700; }
+    .forts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    .fort { display: grid; gap: 4px; min-width: 0; }
+    .fort canvas { width: 100%; max-width: 380px; aspect-ratio: 10.8 / 7.6; background: var(--wall); border-radius: 8px; border: 1px solid var(--line); }
+    .fort .who { font-weight: 700; }
+    .fort .who.blue { color: var(--blue); } .fort .who.green { color: var(--green); }
+    details summary { cursor: pointer; font-weight: 700; }
+    .tablewrap { overflow-x: auto; }
+    table { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; width: 100%; }
+    th, td { text-align: left; padding: 4px 8px 4px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+    th { color: var(--muted); font-weight: 600; }
+    td.out { color: var(--red); font-weight: 700; white-space: normal; }
+    .bar { height: 8px; border-radius: 4px; background: var(--line); min-width: 80px; position: relative; overflow: hidden; }
+    .bar i { position: absolute; inset: 0 auto 0 0; background: var(--blue); }
+    #more { justify-self: center; }
+    .empty { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <header><h1>Past games</h1><a href="/">Play</a></header>
+    <p class="meta">Every match played here is saved under its game number, the one in the top bar during play. Quote it in feedback ("game 12, Green's second shot"), or watch the game again.</p>
+    <section id="usage" class="card" hidden></section>
+    <div id="games" style="display:grid;gap:16px"><p class="empty">Loading…</p></div>
+    <button id="more" class="btn quiet" hidden>Older games</button>
+  </main>
+  <script type="module" src="/src/games.ts"></script>
+</body>
+</html>

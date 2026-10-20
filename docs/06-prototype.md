@@ -1,6 +1,6 @@
 # Phase 6: Grey-box prototype, "find the fun"
 
-Status: M1 and **M2 (one complete match) playable** at https://fort-knocks.thomaswi1998.workers.dev (2026-10-20). Next: Thomas plays whole matches and judges the fun.
+Status: M1 and **M2 (one complete match) playable** at https://fort-knocks.thomaswi1998.workers.dev (2026-10-20), after two playtest rounds (`06-playtest.md`). Every match is saved with a game number and can be replayed (https://fort-knocks.thomaswi1998.workers.dev/games). Next: a match against a friend. M3 doesn't depend on it.
 
 **Goal:** answer the question no document can, which is whether this is fun. As cheaply as possible, before any production art or networking.
 

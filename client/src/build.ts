@@ -25,6 +25,8 @@ export class Builder {
   /** A piece tapped out of the box, waiting on the rug to be dragged into place. */
   held: Piece | null = null;
   testing: Range | null = null;
+  /** How often Test was pressed (for the game log). */
+  tests = 0;
   testClock = 0;
   started = 0;
   private placed = 0;
@@ -159,15 +161,15 @@ export class Builder {
   private overTray(py: number): boolean { return py > this.h - LIFT - TRAY_H; }
 
   // ---------- test ----------
-  startTest(): void { this.testing = new Range(this.pieces, this.team); this.testClock = 0; }
+  startTest(): void { this.testing = new Range(this.pieces, this.team); this.testClock = 0; this.tests++; }
   stopTest(): void { this.testing?.world.destroy(); this.testing = null; }
-  tick(dt: number): void { if (this.testing && this.testClock < 4000) { this.testClock += dt * 1000; this.testing.tick(dt, this.testClock, 0); } }
+  tick(dt: number): void { if (this.testing && this.testClock < 4000) { this.testClock += dt * 1000; this.testing.tick(dt, 0); } }
 
   // ---------- drawing ----------
   draw(c: CanvasRenderingContext2D, boil: number): void {   // boil animates the lava during a test
     const { cam } = this;
     if (this.testing) {
-      this.testing.draw(c, cam, { pull: null, lava: 0, boil, clock: this.testClock, launcher: false, w: this.w, h: this.h });
+      this.testing.draw(c, cam, { pull: null, lava: 0, boil, launcher: false, w: this.w, h: this.h });
       this.tray(c);
       return;
     }

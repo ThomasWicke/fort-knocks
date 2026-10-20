@@ -6,10 +6,12 @@
   "description": "Live 1v1 physics duel for phones: build a toy fort, knock theirs down, the floor is lava.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "deploy": "npm run build && wrangler deploy"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.worker.json",
+    "cf-typegen": "wrangler types",
+    "deploy": "npm run build && wrangler deploy",
+    "dev:worker": "npm run build && wrangler d1 migrations apply fort-knocks --local && wrangler dev --port 8787"
   },
   "dependencies": {
     "box2d3-wasm": "5.2.0"
