@@ -9,7 +9,7 @@ export const RUG = { x0: -0.3, x1: RUG_W + 0.3 };
 export const LAVA_TOP = -0.3;
 export const BOOK = { x: -14, y: 0.1, hw: 1.7, hh: 0.4 };
 export const ANCHOR = { x: -13.6, y: 2.35 };   // between the pencil tops
-export const MAX_PULL = 2.0, V_MAX = 20, MARBLE_R = 0.3, MIN_PULL = 0.35;
+export const MAX_PULL = 2.0, V_MAX = 16, MARBLE_R = 0.3, MIN_PULL = 0.35;   // V_MAX was 20; 16 still reaches the back of the rug
 const PREVIEW_SHARE = 0.35;                      // crayon dots show the first 35% of the arc (04-systems)
 const LOST_FADE_MS = 1200;
 
@@ -36,6 +36,8 @@ export class Range {
   marbleId = -1;
   state: 'aim' | 'flight' = 'aim';
   flightT = 0;
+  private impactAt = -1;
+  private lastSpeed = 0;
   trail: [number, number][] = [];
   lastTrail: [number, number][] = [];
   slowUntil = 0;
@@ -62,7 +64,7 @@ export class Range {
     if (this.state !== 'aim' || Math.hypot(pull.x, pull.y) < MIN_PULL) return false;
     const at = this.pouch(pull), v = launchVelocity(pull);
     this.marbleId = this.world.add({ x: at.x, y: at.y, shapes: [{ kind: 'circle', r: MARBLE_R }], mat: MATERIALS.marble, bullet: true, vx: v.x, vy: v.y });
-    this.state = 'flight'; this.flightT = 0; this.trail = [];
+    this.state = 'flight'; this.flightT = 0; this.trail = []; this.impactAt = -1; this.lastSpeed = Math.hypot(v.x, v.y);
     return true;
   }
 
@@ -86,14 +88,21 @@ export class Range {
       if (e.lost && clock - e.lostAt > LOST_FADE_MS) { this.world.remove(e.id); e.gone = true; }
     }
     if (this.state !== 'flight') return;
-    const m = this.world.transform(this.marbleId);
-    if (this.flightT < 3 && this.trail.length < 400) this.trail.push([m.x, m.y]);
-    const resting = this.flightT > 1 && !this.world.awake(this.marbleId) && this.entries.every(e => e.gone || !this.world.awake(e.id));
-    if (resting || this.flightT > 7 || Math.abs(m.x) > 40) {
+    const m = this.world.transform(this.marbleId), v = this.world.velocity(this.marbleId), speed = Math.hypot(v.x, v.y);
+    if (this.impactAt < 0) this.trail.push([m.x, m.y]);   // the arc up to the first hit
+    // the first hit: a sudden loss of speed, or reaching the fort
+    if (this.impactAt < 0 && (speed < this.lastSpeed * 0.75 || m.x >= RUG.x0 - 0.2 || m.y < 0)) this.impactAt = this.flightT;
+    this.lastSpeed = speed;
+    // the next marble is ready shortly after the hit, while the fort is still settling (playtest 1: waiting for rest was too slow)
+    const done = (this.impactAt >= 0 && this.flightT - this.impactAt > 1.6) || !this.world.awake(this.marbleId) || this.flightT > 6 || Math.abs(m.x) > 40;
+    if (done) {
       this.world.remove(this.marbleId); this.marbleId = -1; this.state = 'aim'; this.lastTrail = this.trail;
       this.onShotDone?.();
     }
   }
+
+  /** Nothing in the fort is moving any more. */
+  quiet(): boolean { return this.entries.every(e => e.gone || !this.world.awake(e.id)); }
 
   standing(): number { return this.entries.filter(e => e.piece.type === 'plush' && !e.out).length; }
   /** Share of the fort's value knocked off the rug, 0..1 (the tiebreak). */

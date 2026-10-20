@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="theme-color" content="#F4E9D8">
   <title>Fort Knocks · prototype</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icons/favicon-64.png">
+  <link rel="apple-touch-icon" href="/icons/icon-180.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Fort Knocks">
   <style>
     html, body { margin: 0; height: 100%; background: #F4E9D8; overflow: hidden; overscroll-behavior: none; -webkit-user-select: none; user-select: none; font-family: system-ui, -apple-system, sans-serif; color: #2E2A33; }
     #game { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: none; display: block; }
@@ -14,12 +21,14 @@
     #bar-right { display: flex; gap: 8px; flex: none; }
     button { pointer-events: auto; font: 700 14px system-ui, sans-serif; color: #fff; background: #4A4650; border: 2px solid #2E2A33; border-radius: 999px; padding: 6px 14px; box-shadow: 0 2px 0 #2E2A33; cursor: pointer; }
     button:active { transform: translateY(2px); box-shadow: none; }
+    button.waiting { background: #8A8290; border-color: #6B6370; box-shadow: 0 2px 0 #6B6370; }
     #overlay { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(46,42,51,0.55); padding: 16px; }
     #overlay[hidden] { display: none; }
     .card { background: #FBF6EC; border: 2px solid #2E2A33; border-radius: 16px; box-shadow: 0 4px 0 #2E2A33; padding: 18px 22px; max-width: 520px; text-align: center; }
     .card h1 { margin: 0 0 6px; font-size: 26px; }
     .card p { margin: 6px 0; }
     .card .small { font-size: 13px; color: #6B6370; }
+    .card .how { text-align: left; margin: 8px 0; padding-left: 1.2em; display: grid; gap: 6px; font-size: 14px; }
     .card .row { display: flex; gap: 10px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
     .card button { background: #2F6FDE; font-size: 16px; padding: 9px 18px; }
     .card button.quiet { background: #4A4650; }

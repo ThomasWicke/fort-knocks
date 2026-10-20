@@ -164,8 +164,8 @@ The fiction is a rainy afternoon, with three games the siblings play:
 ## 13. Starting numbers
 | What | Value | Why |
 |---|---|---|
-| Plushie minimum height | 3 cells | High enough that a fall means something, low enough for small budgets |
-| Funnel | 45° from the feet | Phase 2, paper playtest 1 |
+| Plushie minimum height | ~~3~~ **2 cells** (playtest 1) | 3 used up most of the budget; the rising lava already punishes low plushies |
+| Funnel | ~~45°~~ **30° from vertical**, from the feet (prototype) | 45° kept two tall towers from standing side by side |
 | Crushing hit | a marble at about 60% power, hitting directly | Direct hits should count, but bumps shouldn't |
 | Tape tears at | about a toy block falling 2 cells | Survives wobbling, not a real hit |
 | Preview | 35% of the arc | Somewhere between Angry Birds (none) and a full guide |

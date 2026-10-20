@@ -20,7 +20,7 @@ interface Match {
 }
 let screen: 'menu' | 'build' | 'siege' | 'result' = 'menu';
 let match: Match | null = null, builder: Builder | null = null, buildDone: (() => void) | null = null;
-let clock = 0, boil = 0, cssW = 0, cssH = 0;
+let clock = 0, boil = 0, cssW = 0, cssH = 0, sawHowTo = false;
 const cam = new Cam(), tally: Record<Team, number> = { blue: 0, green: 0 };
 let pull: Pull | null = null, pointerId = -1, dragFrom = { x: 0, y: 0 }, botPull: Pull | null = null;
 const timers: { at: number; fn: () => void }[] = [];
@@ -56,18 +56,32 @@ function build(i: 0 | 1): void {
     else startSiege();
   };
   buildBar();
+  if (!sawHowTo) {
+    sawHowTo = true;
+    show(`<h1>How to build</h1>
+      <ul class="how">
+        <li>Drag a piece from the toy box onto the rug, or <b>tap</b> it to take it out, then drag it into place.</li>
+        <li><b>Tap</b> a piece on the rug to turn it. To put it back, <b>drag it into the box</b>: you get its points back.</li>
+        <li>Your three plushies stand <b>above the dashed line</b>, with clear sky above them (the dotted V).</li>
+        <li>Put anything anywhere. If a piece breaks a rule it turns red and says why; fix those before you're ready.</li>
+        <li><b>Test</b> switches the physics on. Whatever falls, falls.</li>
+        <li>The lava rises after volleys 1 and 2, so plushies standing low drown.</li>
+      </ul>
+      <div class="row"><button id="h-ok">Got it</button></div>`);
+    on('h-ok', hide);
+  }
 }
 function buildBar(): void {
   const b = builder; if (!b || !match) return;
   const side = match.sides.find(s => s.team === b.team)!, secs = Math.floor((clock - b.started) / 1000);
   const left = `${side.name} ${side.name === 'You' ? 'build' : 'builds'} · budget ${b.budgetLeft} of ${BUDGET} · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
-  const missing = 3 - b.plushiesPlaced;
-  const key = `${left}|${!!b.testing}|${missing}`;
+  const blocker = b.blocker, testable = b.testable;
+  const key = `${left}|${!!b.testing}|${blocker}|${testable}`;
   if (barRight.dataset.key === key) return;   // rebuild the bar only when something changed
   barRight.dataset.key = key;
   bar(left, b.testing
     ? [['Back to building', () => { b.stopTest(); buildBar(); }]]
-    : [['Test', () => { b.startTest(); buildBar(); }], [b.ready ? 'Ready' : `Place ${missing} more plushie${missing === 1 ? '' : 's'}`, () => { if (b.ready) buildDone?.(); }]]);
+    : [['Test', () => { if (b.testable) { b.startTest(); buildBar(); } }, !testable], [blocker ?? 'Ready', () => { if (!b.blocker) buildDone?.(); }, !!blocker]]);
 }
 function startSiege(): void {
   const m = match!;
@@ -80,7 +94,13 @@ const target = (): Range => match!.sides[1 - match!.shooter].range!;
 function beginTurn(): void {
   const m = match!, shooter = m.sides[m.shooter], range = target();
   m.shotsLeft = SHOTS; m.busy = false;
-  range.onShotDone = () => { m.shotsLeft--; status(); if (m.shotsLeft > 0) { if (shooter.bot) later(900, botShot); } else later(900, endTurn); };
+  range.onShotDone = () => {
+    m.shotsLeft--; status();
+    if (m.shotsLeft > 0) { if (shooter.bot) later(700, botShot); return; }
+    // the turn ends once the dust has settled (at most 3 s), so everyone sees what the volley did
+    const t0 = clock, wait = () => (range.quiet() || clock - t0 > 3000 ? later(500, endTurn) : later(100, wait));
+    wait();
+  };
   status();
   if (shooter.bot) later(1200, botShot);
 }
@@ -92,9 +112,11 @@ function endTurn(): void {
     else beginTurn();
     return;
   }
-  // end of the volley: the lava rises one cell, then the score is checked
-  m.busy = true; m.lava += 1; status('The lava rises');
-  later(1800, () => {
+  // end of the volley: between volleys the lava rises one cell (to 1, then 2), then the score is checked
+  m.busy = true;
+  const rises = m.volley < VOLLEYS;
+  if (rises) { m.lava += 1; status('The lava rises'); }
+  later(rises ? 1800 : 600, () => {
     const wiped = m.sides.some(s => s.range!.standing() === 0);
     if (wiped || m.volley >= VOLLEYS) return result();
     m.volley++; m.shooter = 0;
@@ -144,9 +166,13 @@ function passThen(title: string, text: string, next: () => void): void {
 }
 
 // ---------- DOM helpers ----------
-function bar(left: string, buttons: [string, () => void][]): void {
+function bar(left: string, buttons: [string, () => void, boolean?][]): void {
   barLeft.textContent = left; barRight.replaceChildren();
-  for (const [label, fn] of buttons) { const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = fn; barRight.append(b); }
+  for (const [label, fn, waiting] of buttons) {
+    const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = fn;
+    if (waiting) b.classList.add('waiting');   // still tappable, but reads as "not yet"
+    barRight.append(b);
+  }
 }
 function show(html: string): void { overlay.innerHTML = `<div class="card">${html}</div>`; overlay.hidden = false; }
 function hide(): void { overlay.hidden = true; }
@@ -212,9 +238,9 @@ function frame(now: number): void {
 
 // Dev hook for automated checks without a visible tab.
 if (import.meta.env.DEV) Object.assign(window, { __fk: {
-  start: (mode: Match['mode']) => { newMatch(mode); document.getElementById('p-go')?.click(); },
+  start: (mode: Match['mode']) => { sawHowTo = true; newMatch(mode); document.getElementById('p-go')?.click(); },
   load: (i: number) => { builder?.load(BOT_FORTS[i]); buildBar(); },
-  ready: () => { if (builder?.ready) buildDone?.(); },
+  ready: () => { if (builder && !builder.blocker) buildDone?.(); },
   go: () => document.getElementById('p-go')?.click(),
   fire: (x: number, y: number) => { if (screen === 'siege') target().fire({ x, y }); },
   run: (sec: number) => { for (let i = 0; i < sec * 60; i++) tick(1 / 60); draw(); return `${screen} · ${barLeft.textContent}`; },

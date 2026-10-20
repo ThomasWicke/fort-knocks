@@ -20,7 +20,7 @@ export const MATERIALS: Record<Family | 'marble' | 'floor', Material> = {
   block: { density: 1.0, friction: 0.8, restitution: 0.05 },
   book: { density: 2.0, friction: 0.8, restitution: 0.02 },
   plush: { density: 0.5, friction: 0.9, restitution: 0.0 },
-  marble: { density: 8.0, friction: 0.3, restitution: 0.2 },
+  marble: { density: 4.0, friction: 0.3, restitution: 0.2 },   // was 8: one shot swept all three plushies off (playtest 1)
   floor: { density: 0, friction: 0.8, restitution: 0 },
 };
 
@@ -84,7 +84,8 @@ export function makeDraw(rng: () => number): Draw {
 }
 
 // ---------- build rules (docs/02-core-design.md §2, 04-systems.md §4) ----------
-export const RUG_W = 10, CAP = 7, MIN_PLUSH_Y = 3,   // CAP 7 (not 12 as in 04-systems): a phone's height is the limit
+// MIN_PLUSH_Y 2 (was 3): the rising lava already punishes low plushies, and 3 cost most of the budget (playtest 1)
+export const RUG_W = 10, CAP = 7, MIN_PLUSH_Y = 2,   // CAP 7 (not 12 as in 04-systems): a phone's height is the limit
    PLUSHIES: Plushie[] = ['brumm', 'hoppel', 'socke'];
 const E = 1e-6;
 export const overlaps = (a: Piece, b: Piece): boolean =>
