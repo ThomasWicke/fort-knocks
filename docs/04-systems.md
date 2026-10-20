@@ -43,7 +43,7 @@ Four materials. Every one is a real object, so players know how it behaves befor
 
 | Piece | Shapes, in cells (1 cell = one toy block) | Weight | Grip | How it behaves | Cost | Weak to |
 |---|---|---|---|---|---|---|
-| **Card tent** | Two leaning cards, 1.5 × 1.4; a flat card as a roof, 2 × 0.15 | very light | low | Gives way at a touch and flutters down | 1 | Jacks |
+| **Card tent** | Two leaning cards joined at the top as **one rigid piece** (Phase 6 spike), 1.5 × 1.4; a flat card as a roof, 2 × 0.15 | very light | low | Gives way at a touch and flutters down | 1 | Jacks |
 | **Domino** | Standing 0.5 × 2, lying 2 × 0.5 | light | medium | **Falls in chains** | 1 | Marble |
 | **Toy block** | Cube 1 × 1, long 2 × 1, arch 2 × 1, triangle 1 × 1 | medium | high | Stacks well, tumbles and clacks | 2 (long and arch 3) | Spinning top |
 | **Book** | Lying 3 × 0.5, standing 0.5 × 3 | heavy | high | Holds, until it gets wet and slides | 3 | Water balloon |

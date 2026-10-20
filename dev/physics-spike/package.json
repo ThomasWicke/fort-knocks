@@ -1,0 +1,11 @@
+{
+  "name": "fort-knocks-physics-spike",
+  "private": true,
+  "type": "module",
+  "description": "Phase 6 tech spike: the same fort and the same shot in three 2D physics engines.",
+  "dependencies": {
+    "@dimforge/rapier2d-compat": "0.21.0",
+    "box2d3-wasm": "5.2.0",
+    "planck": "1.5.1"
+  }
+}

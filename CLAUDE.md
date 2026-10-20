@@ -24,3 +24,6 @@ A live 1v1 physics duel for phones, close to classic Angry Birds. Two siblings b
 ## Infrastructure
 - GitHub: `git@github.com:ThomasWicke/fort-knocks.git`.
 - Multiplayer (Phase 7): Cloudflare Durable Objects through `partyserver`, as in `../fabricator`. PartyKit's shared zone no longer accepts new projects. Wrangler is logged in to Thomas's Cloudflare account.
+
+## Physics
+Box2D v3 via `box2d3-wasm` (compat build), behind a small physics interface, with Rapier as the fallback. The reasoning and the measurements are in `docs/06-prototype.md`. `dev/physics-spike/spike.mjs` runs the same fort in all three engines (`node spike.mjs`; `node spike.mjs debug` lists the pieces that fall during the settle).
