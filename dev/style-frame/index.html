@@ -1,0 +1,124 @@
+<meta charset="utf-8">
+<title>Fort Knocks Style Frame</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Gochi+Hand&family=Lilita+One&display=swap">
+<style>
+/* Layout: the phone screen is the hero, in a dark bezel; controls and the legend sit under it like notes on a desk. */
+:root {
+  --paper: #F4E9D8;
+  --card: #FBF6EC;
+  --ink: #2E2A33;
+  --muted: #6B6370;
+  --rule: #E1D4BE;
+  --blue: #2F6FDE;
+  --bezel: #1E1B22;
+  --display: "Lilita One", "Arial Rounded MT Bold", system-ui, sans-serif;
+  --ui: "Baloo 2", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --hand: "Gochi Hand", "Comic Sans MS", cursive;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --paper: #17151B; --card: #211E26; --ink: #F2ECE2; --muted: #A79FAD; --rule: #34303B; --blue: #6F9BF0; --bezel: #0B0A0D; color-scheme: dark; }
+}
+:root[data-theme="dark"] { --paper: #17151B; --card: #211E26; --ink: #F2ECE2; --muted: #A79FAD; --rule: #34303B; --blue: #6F9BF0; --bezel: #0B0A0D; color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink); font-family: var(--ui); font-size: 1rem; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.wrap { max-width: 1240px; margin: 0 auto; padding-block: 32px 64px; display: grid; gap: 28px; }
+header { display: grid; gap: 8px; max-width: 70ch; }
+.eyebrow { font-family: var(--hand); font-size: 1.15rem; color: var(--muted); }
+h1 { font-family: var(--display); font-weight: 400; font-size: clamp(2rem, 5vw, 3.2rem); line-height: 1; margin: 0; text-wrap: balance; }
+.lede { margin: 0; color: var(--muted); font-size: 1.08rem; }
+.lede strong { color: var(--ink); }
+.stage { display: grid; justify-items: center; }
+.device { background: var(--bezel); border-radius: 36px; padding: 12px; width: 100%; max-width: calc(844px + 24px); box-shadow: 0 18px 40px rgba(20, 16, 24, 0.25); }
+.device.big { max-width: 1240px; }
+canvas { display: block; width: 100%; height: auto; aspect-ratio: 844 / 390; border-radius: 26px; background: #F4E9D8; }
+.controls { display: flex; flex-wrap: wrap; gap: 14px 22px; justify-content: center; }
+.seg { display: inline-flex; align-items: center; gap: 8px; }
+.seg span { font-family: var(--hand); font-size: 1.1rem; color: var(--muted); }
+.seg div { display: inline-flex; background: var(--card); border: 1.5px solid var(--rule); border-radius: 999px; padding: 3px; }
+.seg button { font: 700 0.95rem var(--ui); color: var(--ink); background: transparent; border: 0; border-radius: 999px; padding: 6px 14px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
+.seg button:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+.legend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.note { background: var(--card); border-radius: 14px; padding: 18px 20px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.note h2 { font-family: var(--display); font-weight: 400; font-size: 1.35rem; margin: 0; }
+.note ul { margin: 0; padding-left: 1.1em; display: grid; gap: 6px; }
+.note li::marker { color: var(--blue); }
+@media (max-width: 860px) { .legend { grid-template-columns: minmax(0, 1fr); } .device { border-radius: 22px; padding: 7px; } canvas { border-radius: 16px; } }
+</style>
+
+<main class="wrap">
+  <header>
+    <span class="eyebrow">Fort Knocks · Phase 5.3 · the style frame</span>
+    <h1>The siege screen, drawn for real</h1>
+    <p class="lede">One screen from The Siege, volley 2, at landscape phone size. <strong>Everything is drawn in code</strong> except the three plushies, which are illustrated sprites in the key-art style. If the two sit together well, the hybrid works.</p>
+  </header>
+
+  <div class="stage">
+    <div class="device" id="device">
+      <canvas id="frame" role="img" aria-label="Fort Knocks siege screen: a rubber-band launcher on a book at the left, a toy fort of books, blocks, dominoes and cards on a rug at the right with three plushies on top, crayon lava on the floor, and the interface along the top and bottom."></canvas>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="seg"><span>Moment</span><div role="group" aria-label="Moment">
+      <button type="button" id="m-aim" aria-pressed="true">Aiming</button>
+      <button type="button" id="m-impact" aria-pressed="false">Impact</button>
+    </div></div>
+    <div class="seg"><span>Room</span><div role="group" aria-label="Room">
+      <button type="button" id="r-day" aria-pressed="true">Rainy afternoon</button>
+      <button type="button" id="r-night" aria-pressed="false">Lights out</button>
+    </div></div>
+    <div class="seg"><span>Size</span><div role="group" aria-label="Size">
+      <button type="button" id="s-phone" aria-pressed="true">Phone</button>
+      <button type="button" id="s-big" aria-pressed="false">Big</button>
+    </div></div>
+  </div>
+
+  <section class="legend">
+    <div class="note">
+      <h2>Drawn in code</h2>
+      <ul>
+        <li>The room, the rug and the launcher.</li>
+        <li>All four piece families: books, toy blocks, dominoes, cards.</li>
+        <li>The crayon layer: lava that boils at 12 fps, flames, the wall drawings, aim dots, the impact burst.</li>
+        <li>The interface: sticker button, team bandanas, tape label, crayon clock, matchbox of ammo.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h2>Illustrated sprites</h2>
+      <ul>
+        <li>Brumm, Hoppel and Socke, generated with the app icon as the style reference and cut out of a magenta background.</li>
+        <li>They wear the green team's striped bandanas, because this is the opponent's fort.</li>
+        <li>They breathe a little. Only plushies squash; real pieces never do.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h2>What to look at</h2>
+      <ul>
+        <li>Do the plushies belong on the code-drawn pieces, or do they look pasted on?</li>
+        <li>At phone size: can you tell cards, dominoes, blocks and books apart?</li>
+        <li>Is the lava loud enough to read as danger, and the wall drawings quiet enough?</li>
+        <li>The lava has risen one cell up the fort after volley 1. Does that read?</li>
+      </ul>
+    </div>
+  </section>
+</main>
+
+<script src="frame.js"></script>
+<script>
+  const pairs = [['m-aim', 'm-impact', v => FortKnocksFrame.set({ mode: v ? 'aim' : 'impact' })],
+                 ['r-day', 'r-night', v => FortKnocksFrame.set({ night: !v })],
+                 ['s-phone', 's-big', v => { document.getElementById('device').classList.toggle('big', !v); FortKnocksFrame.resize(); }]];
+  for (const [a, b, fn] of pairs) {
+    const A = document.getElementById(a), B = document.getElementById(b);
+    const pick = first => { A.setAttribute('aria-pressed', first); B.setAttribute('aria-pressed', !first); fn(first); };
+    A.addEventListener('click', () => pick(true));
+    B.addEventListener('click', () => pick(false));
+  }
+</script>
