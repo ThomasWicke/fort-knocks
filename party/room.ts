@@ -15,6 +15,8 @@ interface SeatState {
 }
 interface RoomState {
   phase: Phase; n: number; draw: unknown; schedule: unknown; game: number | null; started: string;
+  /** The mode (client/src/modes.ts), Best of Three's round and the rounds won per seat. */
+  rules: string; round: number; wins: [number, number];
   volley: number;
   seats: [SeatState, SeatState];
   /** Per fort (indexed by its owner's seat), as reported by the phone that attacks it. */
@@ -23,10 +25,11 @@ interface RoomState {
   shots: unknown[]; volleys: { volley: number; standing: { blue: number; green: number } }[];
 }
 
-const VOLLEYS = 3;
+/** Volleys per match or round: the Siege has three; a Best of Three round and the race have one. */
+const volleys = (rules: string) => (rules === 'siege' ? 3 : 1);
 const seat = (): SeatState => ({ player: null, conn: null, app: '', device: '', fort: null, buildMs: 0, tests: 0, fired: [], live: [], done: 0, lava: 0 });
 const fresh = (): RoomState => ({
-  phase: 'lobby', n: 0, draw: null, schedule: null, game: null, started: '', volley: 0, seats: [seat(), seat()],
+  phase: 'lobby', n: 0, draw: null, schedule: null, game: null, started: '', rules: 'siege', round: 1, wins: [0, 0], volley: 0, seats: [seat(), seat()],
   standing: [3, 3], destroyed: [0, 0], drowned: [[], []], snaps: [null, null], shots: [], volleys: [],
 });
 
@@ -55,7 +58,9 @@ export class FortRoom extends Server<Env> {
     switch (m.t) {
       case 'start':   // a new match: when both are here (from the lobby) or after a result (rematch)
         if (s.phase === 'siege' || s.phase === 'build' || !s.seats.every(x => x.conn)) return;
+        if (m.rules !== 'rounds' || m.round <= 1 || s.rules !== 'rounds') s.wins = [0, 0];
         Object.assign(s, { phase: 'build', n: s.n + 1, draw: m.draw, schedule: m.schedule, game: null, started: new Date().toISOString(), volley: 0,
+          rules: m.rules, round: m.round,
           standing: [3, 3], destroyed: [0, 0], drowned: [[], []], snaps: [null, null], shots: [], volleys: [] });
         for (const st of s.seats) Object.assign(st, { fort: null, buildMs: 0, tests: 0, fired: [], live: [], done: 0, lava: 0 });
         this.persist(); this.sendRoom();
@@ -88,8 +93,9 @@ export class FortRoom extends Server<Env> {
         const steps = new Set(m.shots.map(x => (x as { step?: number }).step));
         s.shots.push(...s.seats[me].live.filter(x => !steps.has((x as { step?: number }).step)), ...m.shots);
         this.persist();
-        if (s.seats.every(x => x.done >= s.volley)) {
-          if (s.volley < VOLLEYS) this.broadcastMsg({ t: 'rise', volley: s.volley });
+        if (s.rules === 'race' && m.standing === 0) await this.finish();   // the race ends the moment a fort is cleared
+        else if (s.seats.every(x => x.done >= s.volley)) {
+          if (s.volley < volleys(s.rules)) this.broadcastMsg({ t: 'rise', volley: s.volley });
           else await this.finish();
         }
         await this.saveLog();
@@ -126,22 +132,31 @@ export class FortRoom extends Server<Env> {
       const me = i as Seat;
       conn.send(JSON.stringify({ t: 'siege', forts: s.seats.map(x => x.fort!), volley: s.volley,
         resume: { snap: s.snaps[1 - me], fired: st.fired, done: st.done >= s.volley } } satisfies S2C));
-      if (st.done >= s.volley && s.seats.every(x => x.done >= s.volley) && s.volley < VOLLEYS && st.lava < s.volley) conn.send(JSON.stringify({ t: 'rise', volley: s.volley } satisfies S2C));
+      if (st.done >= s.volley && s.seats.every(x => x.done >= s.volley) && s.volley < volleys(s.rules) && st.lava < s.volley) conn.send(JSON.stringify({ t: 'rise', volley: s.volley } satisfies S2C));
     }
     if (s.phase === 'result') conn.send(JSON.stringify(this.resultMsg()));
   }
 
   private async finish(): Promise<void> {
+    if (this.s.phase === 'result') return;
+    // a phone that never reported (the race ended early) still has its shots in the log, as they were fired
+    for (const st of this.s.seats) if (st.done < this.s.volley) { this.s.shots.push(...st.live); st.live = []; }
+    const w = this.winner();
+    if (this.s.rules === 'rounds' && w !== null) this.s.wins[w]++;
     this.s.phase = 'result';
     this.persist();
     this.broadcastMsg(this.resultMsg());
     this.sendRoom();
   }
   /** Most plushies standing wins; a tie goes to whoever knocked off the larger share of the other's fort. */
+  private winner(): Seat | null {
+    const { standing: st, destroyed: d } = this.s;
+    return st[0] !== st[1] ? (st[0] > st[1] ? 0 : 1) : d[1] !== d[0] ? (d[1] > d[0] ? 0 : 1) : null;
+  }
   private resultMsg(): S2C {
-    const { standing: st, destroyed: d, game } = this.s;
-    const winner: Seat | null = st[0] !== st[1] ? (st[0] > st[1] ? 0 : 1) : d[1] !== d[0] ? (d[1] > d[0] ? 0 : 1) : null;
-    return { t: 'result', standing: [...st], destroyed: [...d], winner, game };
+    const { standing: st, destroyed: d, game, rules, round, wins } = this.s;
+    const over = rules !== 'rounds' || wins.some(x => x >= 2) || round >= 3;
+    return { t: 'result', standing: [...st], destroyed: [...d], winner: this.winner(), game, rules, round, wins: [...wins], over };
   }
 
   // ---------- the game log ----------
@@ -149,10 +164,10 @@ export class FortRoom extends Server<Env> {
     const s = this.s, res = s.phase === 'result' ? this.resultMsg() as Extract<S2C, { t: 'result' }> : null;
     const status = s.phase === 'result' ? 'done' : s.phase === 'siege' ? 'siege' : 'building';
     const winner = res ? (res.winner === null ? 'draw' : SEAT_TEAM[res.winner]) : null;
-    const summary = res ? `Blue ${s.standing[0]} – Green ${s.standing[1]} · ${res.winner === null ? 'draw' : `${SEAT_NAME[res.winner]} wins${s.standing[0] === s.standing[1] ? ' on destruction' : ''}`}`
-      : s.phase === 'siege' ? `Volley ${s.volley} · Blue ${s.standing[0]} – Green ${s.standing[1]}` : 'Both building';
+    const summary = (s.rules === 'rounds' ? `Round ${s.round} · ` : '') + (res ? `Blue ${s.standing[0]} – Green ${s.standing[1]} · ${res.winner === null ? 'draw' : `${SEAT_NAME[res.winner]} wins${s.standing[0] === s.standing[1] ? ' on destruction' : ''}`}`
+      : s.phase === 'siege' ? `Volley ${s.volley} · Blue ${s.standing[0]} – Green ${s.standing[1]}` : 'Both building');
     return {
-      v: 1, app: s.seats[0].app || s.seats[1].app, mode: 'online', started: s.started, room: this.name,
+      v: 1, app: s.seats[0].app || s.seats[1].app, mode: 'online', rules: s.rules, round: s.round, started: s.started, room: this.name,
       device: s.seats.map(x => x.device).join(' | '), status, draw: s.draw, schedule: s.schedule,
       sides: s.seats.map((x, i) => ({ team: SEAT_TEAM[i], name: SEAT_NAME[i], bot: false, fort: x.fort, buildMs: x.buildMs, tests: x.tests, drowned: s.drowned[i] })),
       shots: s.shots, volleys: s.volleys,
@@ -171,7 +186,7 @@ export class FortRoom extends Server<Env> {
   // ---------- sending ----------
   private seatInfo() { return this.s.seats.map(x => ({ here: !!x.conn, ready: !!x.fort })); }
   private sendRoom(): void {
-    const s = this.s, match = s.n ? { n: s.n, draw: s.draw, schedule: s.schedule, game: s.game } : null;
+    const s = this.s, match = s.n ? { n: s.n, draw: s.draw, schedule: s.schedule, game: s.game, rules: s.rules, round: s.round, wins: [...s.wins] } : null;
     s.seats.forEach((st, i) => {
       if (!st.conn) return;
       this.getConnection(st.conn)?.send(JSON.stringify({ t: 'room', code: this.name, you: i as Seat, phase: s.phase, seats: this.seatInfo(), match, volley: s.volley } satisfies S2C));

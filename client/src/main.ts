@@ -10,16 +10,17 @@ import '@fontsource/lilita-one/latin-400.css';
 import '@fontsource/gochi-hand/latin-400.css';
 import { initPhysics } from './physics';
 import wasmUrl from '../../node_modules/box2d3-wasm/build/dist/es/compat/Box2D.compat.wasm?url';
-import { BOT_FORTS, BUDGET, makeDraw, type Draw, type Piece } from './fort';
+import { BOT_FORTS, makeDraw, type Draw, type Piece } from './fort';
 import { Builder } from './build';
 import { BOOK, Cam, Puppet, Range, aimAt, drawScene, MAX_PULL, type Pull, type Snap } from './range';
 import { HAND } from './draw';
 import { AMMO, drawAmmo, makeSchedule, type Ammo } from './ammo';
+import { MODES, RULES_ORDER, roundAmmo, savedRules, saveRules, type Rules } from './modes';
 import { Recorder, deviceInfo, type GameLog, type ShotLog, type SideLog, type Team } from './record';
 import { RoomConn, newCode, playerId } from './party';
 import { SEAT_NAME, SEAT_TEAM, type MatchSetup, type Phase, type S2C, type Seat, type SeatInfo } from '../../party/protocol';
 
-const VOLLEYS = 3, SHOTS = 2, VIEW = { x0: -17, x1: 12.5, y0: -2.2, y1: 11.3 }, BAR = 44;
+const VIEW = { x0: -17, x1: 12.5, y0: -2.2, y1: 11.3 }, BAR = 44;
 // Finger travel for a full pull, in css px. It used to be 2 cells of screen, about 50 px on a phone, where a few
 // pixels of lift-off wobble moved the shot by several percent (playtest 2: "the preview isn't accurate any more").
 const PULL_PX = 110;
@@ -41,10 +42,16 @@ interface Match {
   hand: Ammo[]; loaded: Ammo;
   /** The bot's plan for the shot in flight: where it aimed, so it knows when to tap. */
   botPlan: { x: number; y: number } | null;
+  /** The mode (modes.ts), the round (Best of Three) and the rounds won. */
+  rules: Rules; round: number; wins: Record<Team, number>;
+  /** Before Mum Comes In: the clock, the reloads and the ammo cycles. */
+  race: Race | null;
 }
+interface Race { start: number; lastFire: number; next: number; botNext: number; botAt: number; botHand: Ammo[]; over: boolean; footsteps: boolean }
+const spec = (m: Match) => MODES[m.rules];
 let screen: 'menu' | 'lobby' | 'build' | 'siege' | 'result' | 'watch' = 'menu';
 let match: Match | null = null, builder: Builder | null = null, buildDone: (() => void) | null = null;
-let clock = 0, boil = 0, cssW = 0, cssH = 0, sawHowTo = false;
+let clock = 0, boil = 0, cssW = 0, cssH = 0, sawHowTo = false, buildSecs = 90;
 const cam = new Cam(), tally: Record<Team, number> = { blue: 0, green: 0 };
 let pull: Pull | null = null, pointerId = -1, botPull: Pull | null = null;
 let aim = { x: 0, y: 0, t: 0, seen: [] as { t: number; p: Pull }[] };   // the drag in progress: where and when it started, recent pulls
@@ -58,31 +65,38 @@ function menu(): void {
   screen = 'menu'; match = null; builder = null; watching = null; timers.length = 0;
   if (location.search || location.pathname !== '/') history.replaceState(null, '', '/');
   bar('', []);
-  show(`<h1>Fort Knocks</h1><p>Prototype · The Siege</p>
+  const rules = savedRules(), sp = MODES[rules];
+  show(`<h1>Fort Knocks</h1>
+    <div class="modes">${RULES_ORDER.map(r => `<button id="mode-${r}" class="mode${r === rules ? ' on' : ''}">${MODES[r].name}</button>`).join('')}</div>
+    <p class="small">${sp.blurb}</p>
     <div class="row"><button id="m-host">Play a friend online</button><button id="m-join" class="quiet">Join a friend</button></div>
-    <div class="row"><button id="m-pass" class="quiet">Pass and play</button><button id="m-bot" class="quiet">Play against a bot</button></div>
-    <p class="small">Build a fort from the toy box and put your three plushies on top. Then knock the other fort down: a plushie that touches the rug or the lava is out. Three volleys of two marbles each, and the lava rises after every volley. Most plushies standing wins.</p>
-    <p class="small"><a href="/games">Past games</a>: every match is saved with its game number.</p>`);
-  on('m-pass', () => newMatch('pass')); on('m-bot', () => newMatch('bot'));
-  on('m-host', hostRoom); on('m-join', askCode);
+    <div class="row">${sp.pass ? '<button id="m-pass" class="quiet">Pass and play</button>' : ''}<button id="m-bot" class="quiet">Play against a bot</button></div>
+    <p class="small">Build a fort and put your three plushies on top, then knock the other fort down: a plushie that touches the rug or the lava is out. Most plushies standing wins. <a href="/games">Past games</a></p>`);
+  for (const r of RULES_ORDER) on(`mode-${r}`, () => { saveRules(r); menu(); });
+  if (sp.pass) on('m-pass', () => newMatch('pass', rules));
+  on('m-bot', () => newMatch('bot', rules));
+  on('m-host', () => hostRoom(rules)); on('m-join', askCode);
 }
-function newMatch(mode: 'pass' | 'bot'): void {
+function newMatch(mode: 'pass' | 'bot', rules: Rules, round = 1, wins: Record<Team, number> = { blue: 0, green: 0 }): void {
   quitMatch(); leaveRoom();
   timers.length = 0;
   const blue: Side = { team: 'blue', name: mode === 'bot' ? 'You' : 'Blue', bot: false, fort: [], range: null };
   const green: Side = { team: 'green', name: mode === 'bot' ? 'Bot' : 'Green', bot: mode === 'bot', fort: [], range: null };
-  const draw = makeDraw(rng), schedule = makeSchedule(rng);
+  const draw = makeDraw(rng), schedule = scheduleFor(rules, round);
   const log: GameLog = {
-    v: 1, app: __APP__, mode, started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw, schedule,
+    v: 1, app: __APP__, mode, rules, round, started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw, schedule,
     sides: [{ team: 'blue', name: blue.name, bot: false, fort: null }, { team: 'green', name: green.name, bot: green.bot, fort: null }],
     shots: [], volleys: [], winner: null, summary: `${blue.name} building`,
   };
-  match = { mode, draw, sides: [blue, green], volley: 1, shooter: 0, shotsLeft: SHOTS, lava: 0, lavaShown: 0, started: clock, busy: false, rec: new Recorder(log),
-    schedule, hand: [], loaded: 'marble', botPlan: null };
+  match = { mode, draw, sides: [blue, green], volley: 1, shooter: 0, shotsLeft: 0, lava: 0, lavaShown: 0, started: clock, busy: false, rec: new Recorder(log),
+    schedule, hand: [], loaded: 'marble', botPlan: null, rules, round, wins, race: null };
   match.rec.onId = () => { if (screen === 'siege') status(); };   // the build bar picks the number up by itself
-  if (mode === 'pass') passThen('Blue builds first', 'Green, look away while Blue builds.', () => build(0));
+  const r = rules === 'rounds' ? `Round ${round} of 3. ` : '';
+  if (mode === 'pass') passThen(`${r ? `Round ${round}: ` : ''}Blue builds first`, `${r}Green, look away while Blue builds.`, () => build(0));
   else build(0);
 }
+/** The ammo for a match (Siege, Before Mum) or a round (Best of Three). */
+const scheduleFor = (rules: Rules, round: number): Ammo[][] => (rules === 'rounds' ? roundAmmo(MODES.rounds.shots[round - 1], rng) : makeSchedule(rng));
 /** Leaving a match before its result still logs it, as quit. */
 function quitMatch(): void {
   if (!match || match.rec.log.status === 'done' || match.rec.log.status === 'quit') return;
@@ -94,8 +108,10 @@ function quitMatch(): void {
 function build(i: 0 | 1): void {
   const m = match!, side = m.sides[i];
   screen = 'build'; hide();
-  builder = new Builder(side.team, m.draw, clock);
-  builder.schedule = m.schedule;
+  const sp = spec(m), r = Math.min(m.round, sp.budgets.length) - 1;
+  builder = new Builder(side.team, m.draw, clock, sp.budgets[r]);
+  builder.schedule = m.rules === 'race' ? null : m.schedule;
+  buildSecs = sp.buildSecs[Math.min(m.round, sp.buildSecs.length) - 1];
   layout();
   buildDone = () => {
     const b = builder!, sl = m.rec.log.sides[i];
@@ -131,7 +147,8 @@ function build(i: 0 | 1): void {
 function buildBar(): void {
   const b = builder; if (!b || !match) return;
   const side = match.sides.find(s => s.team === b.team)!, secs = Math.floor((clock - b.started) / 1000);
-  const left = `${tag()}${side.name} ${side.name === 'You' ? 'build' : 'builds'} · budget ${b.budgetLeft} of ${BUDGET} · ${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`;
+  const rest = buildSecs - secs, clockText = rest >= 0 ? `${Math.floor(rest / 60)}:${String(rest % 60).padStart(2, '0')} left` : 'time\'s up';
+  const left = `${tag()}${side.name} ${side.name === 'You' ? 'build' : 'builds'} · budget ${b.budgetLeft} of ${b.budget} · ${clockText}`;
   const blocker = b.blocker, testable = b.testable;
   const key = `${left}|${!!b.testing}|${blocker}|${testable}`;
   if (barRight.dataset.key === key) return;   // rebuild the bar only when something changed
@@ -145,22 +162,33 @@ function startSiege(): void {
   for (const s of m.sides) { s.range = new Range(s.fort, s.team); s.range.settle(3); }   // both forts settle at once
   m.rec.log.status = 'siege'; save();
   screen = 'siege'; hide(); layout();
-  if (m.mode === 'pass') passThen('Blue shoots', `Volley 1 of ${VOLLEYS}: ${ammoPair(m, 1)}. Hand the phone to Blue.`, beginTurn);
+  if (m.rules === 'race') return startRace();
+  if (m.mode === 'pass') passThen('Blue shoots', `${volleyName(m)}: ${ammoPair(m, 1)}. Hand the phone to Blue.`, beginTurn);
   else beginTurn();
 }
+const volleyName = (m: Match) => (m.rules === 'rounds' ? `Round ${m.round} of 3` : `Volley ${m.volley} of ${spec(m).volleys}`);
 const target = (): Range => match!.sides[1 - match!.shooter].range!;
 /** Fire at the current target and log the shot. */
 function shoot(p: Pull, how?: Pick<ShotLog, 'raw' | 'aimMs'>): void {
-  const m = match!, range = target();
-  if (!range.fire(p, m.loaded)) return;
+  const m = match!;
+  if (m.race && clock - m.race.lastFire < (spec(m).reload ?? 0) * 1000) return;   // still reloading
+  if (!shootAt(target(), m.sides[m.shooter].team, p, m.loaded, how)) return;
   m.hand.splice(m.hand.indexOf(m.loaded), 1);
-  const shot: ShotLog = Object.assign(range.shots[range.shots.length - 1], { volley: m.volley, by: m.sides[m.shooter].team, n: SHOTS - m.shotsLeft + 1 }, how);
+  if (m.race) { m.race.lastFire = clock; m.hand.push(raceAmmo(m)); m.loaded = m.hand[0]; status(); }
+}
+/** Fire at a range and log the shot. In the race, the volley is the lava period, so replays raise the lava alike. */
+function shootAt(range: Range, by: Team, p: Pull, ammo: Ammo, how?: Pick<ShotLog, 'raw' | 'aimMs'>): ShotLog | null {
+  const m = match!;
+  if (!range.fire(p, ammo)) return null;
+  const volley = m.race ? m.lava + 1 : m.volley, n = m.rec.log.shots.filter(x => x.volley === volley && x.by === by).length + 1;
+  const shot: ShotLog = Object.assign(range.shots[range.shots.length - 1], { volley, by, n }, how);
   m.rec.log.shots.push(shot);
   if (m.mode === 'online') online?.conn.send({ t: 'shot', shot, ammo: shot.ammo });
+  return shot;
 }
 function beginTurn(): void {
   const m = match!, shooter = m.sides[m.shooter], range = target();
-  m.shotsLeft = SHOTS; m.busy = false; m.hand = [...m.schedule[m.volley - 1]]; m.loaded = m.hand[0];
+  m.busy = false; m.hand = [...m.schedule[m.volley - 1]]; m.loaded = m.hand[0]; m.shotsLeft = m.hand.length;
   range.onShotDone = () => {
     m.shotsLeft--; m.botPlan = null;
     if (m.hand.length) m.loaded = m.hand[0];
@@ -178,80 +206,156 @@ function endTurn(): void {
   save();
   if (m.shooter === 0) {
     m.shooter = 1;
-    if (m.mode === 'pass') passThen('Green shoots', `Volley ${m.volley} of ${VOLLEYS}: ${ammoPair(m, m.volley)}. Hand the phone to Green.`, beginTurn);
+    if (m.mode === 'pass') passThen('Green shoots', `${volleyName(m)}: ${ammoPair(m, m.volley)}. Hand the phone to Green.`, beginTurn);
     else beginTurn();
     return;
   }
-  // end of the volley: between volleys the lava rises one cell (to 1, then 2), then the score is checked
+  // end of the volley: in the Siege the lava rises one cell between volleys (to 1, then 2), then the score is checked
   m.busy = true;
-  const rises = m.volley < VOLLEYS;
+  const sp = spec(m), rises = sp.lava === 'volley' && m.volley < sp.volleys;
   if (rises) { m.lava += 1; status('The lava rises'); }
   later(rises ? 1800 : 600, () => {
     m.rec.log.volleys.push({ volley: m.volley, standing: standing() });
     const wiped = m.sides.some(s => s.range!.standing() === 0);
-    if (wiped || m.volley >= VOLLEYS) return result();
+    if (wiped || m.volley >= sp.volleys) return result();
     m.volley++; m.shooter = 0;
     save();
-    if (m.mode === 'pass') passThen('Blue shoots', `Volley ${m.volley} of ${VOLLEYS}: ${ammoPair(m, m.volley)}. Hand the phone to Blue.`, beginTurn);
+    if (m.mode === 'pass') passThen('Blue shoots', `${volleyName(m)}: ${ammoPair(m, m.volley)}. Hand the phone to Blue.`, beginTurn);
     else beginTurn();
   });
 }
-function botShot(): void {
-  const m = match!, range = target(), aims = range.plushTargets();
-  if (screen !== 'siege' || range.state !== 'aim' || m.shotsLeft <= 0) return;
-  m.loaded = m.hand[Math.floor(rng() * m.hand.length)];
-  const t = aims.length ? aims[Math.floor(rng() * aims.length)] : { x: 5, y: 3 };
-  // the top is lobbed high so it arrives above its target and drills down; the rest come in at a middle angle
-  const [lo, span] = m.loaded === 'top' ? [56, 14] : [32, 26];
-  const aimY = m.loaded === 'top' ? t.y + 1.6 : t.y;
+/** Where the bot aims: a random standing plushie, with human-sized errors. The top is lobbed high so it arrives
+ *  above its target and drills down; the rest come in at a middle angle. */
+function botAim(range: Range, ammo: Ammo): { pull: Pull; at: { x: number; y: number } } {
+  const aims = range.plushTargets(), t = aims.length ? aims[Math.floor(rng() * aims.length)] : { x: 5, y: 3 };
+  const [lo, span] = ammo === 'top' ? [56, 14] : [32, 26], aimY = ammo === 'top' ? t.y + 1.6 : t.y;
   let p: Pull | null = null;
   for (let tries = 0; tries < 8 && !p; tries++) p = aimAt(t.x + (rng() - 0.5) * 0.6, aimY + (rng() - 0.3) * 0.6, lo + rng() * span);
   p ??= { x: 1.4, y: 1.0 };
   // a decent but human bot: up to 7% of power and 3.5° of angle off (it wiped a fort in four shots at 4% and 1.7°)
   const ang = Math.atan2(p.y, p.x) + (rng() - 0.5) * 0.12, mag = Math.min(MAX_PULL, Math.hypot(p.x, p.y) * (1 + (rng() - 0.5) * 0.14));
-  const final = { x: Math.cos(ang) * mag, y: Math.sin(ang) * mag }, t0 = clock;
+  return { pull: { x: Math.cos(ang) * mag, y: Math.sin(ang) * mag }, at: { x: t.x, y: t.y } };
+}
+function botShot(): void {
+  const m = match!, range = target();
+  if (screen !== 'siege' || range.state !== 'aim' || m.shotsLeft <= 0) return;
+  m.loaded = m.hand[Math.floor(rng() * m.hand.length)];
+  const { pull: final, at } = botAim(range, m.loaded), t0 = clock;
   const pullStep = () => {   // the bot pulls back visibly before letting go
     const f = Math.min(1, (clock - t0) / 700);
     botPull = { x: final.x * f, y: final.y * f };
-    if (f < 1) later(16, pullStep); else later(250, () => { botPull = null; m.botPlan = { x: t.x, y: t.y }; shoot(final); });
+    if (f < 1) later(16, pullStep); else later(250, () => { botPull = null; m.botPlan = at; shoot(final); });
   };
   pullStep();
 }
 /** The bot's tap: jacks scatter just before the fort, the top drills when it's over its target, the balloon bursts close to it. */
-function botTap(): void {
-  const m = match!, range = target(), plan = m.botPlan, a = range.ammoAt(), f = range.flight;
+function botTap(range: Range, plan: { x: number; y: number } | null): void {
+  const a = range.ammoAt(), f = range.flight;
   if (!plan || !a || !f || f.tapped || !AMMO[f.ammo].tap) return;
   const go = f.ammo === 'jacks' ? a.x > plan.x - 4.5
     : f.ammo === 'top' ? Math.abs(a.x - plan.x) < 0.35 && a.y > plan.y + 0.5
     : Math.hypot(a.x - plan.x, a.y - plan.y) < 1.4;
   if (go) range.ability();
 }
+
+// ---------- Before Mum Comes In: both shoot at once ----------
+// No turns: you fire whenever you've reloaded, at the ammo the schedule deals you (on a loop), while the other side does
+// the same to your fort. The lava rises every 30 s, Mum's footsteps come 30 s before the end, and the door ends it.
+const raceAmmo = (m: Match): Ammo => { const flat = m.schedule.flat(); return flat[m.race!.next++ % flat.length]; };
+let raceBotPlan: { x: number; y: number } | null = null;
+function startRace(): void {
+  const m = match!;
+  m.race = { start: clock, lastFire: -1e9, next: 0, botNext: 3, botAt: clock + 2500, botHand: [], over: false, footsteps: false };
+  Object.assign(m, { shooter: 0, busy: false, volley: 1, shotsLeft: 999 });
+  m.hand = [raceAmmo(m), raceAmmo(m)]; m.loaded = m.hand[0];
+  target().onShotDone = () => status();
+  status();
+}
+function raceTick(): void {
+  const m = match!, r = m.race!, sp = spec(m);
+  if (r.over) return;
+  const t = (clock - r.start) / 1000, lava = Math.min(3, Math.floor(t / 30));
+  if (lava !== m.lava) m.lava = lava;
+  if (!r.footsteps && t >= sp.clock! - 30) r.footsteps = true;
+  if (m.mode === 'bot') {   // the bot fires on its own reload at your fort, which keeps ticking in the background
+    const mine = m.sides[0].range!;
+    if (clock >= r.botAt && mine.state === 'aim') {
+      const flat = m.schedule.flat(), ammo = flat[r.botNext++ % flat.length], { pull: p, at } = botAim(mine, ammo);
+      if (shootAt(mine, 'green', p, ammo)) raceBotPlan = at;
+      r.botAt = clock + sp.reload! * 1000 + 500 + rng() * 2000;
+    }
+    botTap(mine, raceBotPlan);
+  }
+  const cleared = m.sides.some(s => s.range && s.range.standing() === 0);
+  if (t >= sp.clock! || cleared) raceOver(cleared ? 'cleared' : 'door');
+  else if (Math.floor(t * 2) !== Math.floor((t - 1 / 60) * 2)) status();   // the clock in the bar
+}
+function raceOver(why: 'cleared' | 'door'): void {
+  const m = match!;
+  m.race!.over = true; m.busy = true;
+  status(why === 'door' ? 'Mum opens the door!' : 'A fort is cleared!');
+  if (m.mode === 'online') { later(1500, onlineDone); return; }
+  later(2200, result);
+}
+/** The bot race and online race show your own fort small in the corner, so you can follow what's happening to it. */
+const insetCam = new Cam();
+function drawInset(s: Snap, pieces: Piece[], team: Team): void {
+  const w = Math.min(210, cssW * 0.26), h = w * 0.66, x = cssW - w - 6, y = BAR + 6;
+  insetCam.fit({ x0: -1.5, x1: 11.5, y0: -1.3, y1: 8.2 }, { x, y, w, h });
+  ctx.save();
+  const clip = new Path2D(); clip.roundRect(x, y, w, h, 10); ctx.clip(clip);
+  drawScene(ctx, insetCam, pieces, team, s, { pull: null, lava: s.lava, boil, launcher: false, w: cssW, h: cssH });
+  ctx.restore();
+  ctx.lineWidth = 2.5; ctx.strokeStyle = '#2E2A33'; ctx.stroke(clip);
+  ctx.font = `16px ${HAND}`; ctx.fillStyle = '#2E2A33'; ctx.textAlign = 'left'; ctx.fillText('your fort', x + 8, y + 18);
+}
 const standing = (): Record<Team, number> => ({ blue: match!.sides[0].range!.standing(), green: match!.sides[1].range!.standing() });
 function result(): void {
   const m = match!, [a, b] = m.sides, sa = a.range!.standing(), sb = b.range!.standing();
   const dealtA = b.range!.destruction(), dealtB = a.range!.destruction();   // what each side knocked off the other's fort
   const winner = sa !== sb ? (sa > sb ? a : b) : dealtA !== dealtB ? (dealtA > dealtB ? a : b) : null;
-  if (winner) tally[winner.team]++;
-  const ms = clock - m.started, log = m.rec.log;
+  const ms = clock - m.started, log = m.rec.log, rounds = m.rules === 'rounds';
+  const won = (s: Side | null) => (s ? (m.mode === 'bot' && s.team === 'blue' ? 'You win' : `${s.name} wins`) : 'Draw');
   log.result = { standing: { blue: sa, green: sb }, destroyed: { blue: dealtB, green: dealtA }, winner: winner?.team ?? 'draw', ms: Math.round(ms) };
   log.status = 'done'; log.winner = winner?.team ?? 'draw';
-  log.summary = `${a.name} ${sa} – ${b.name} ${sb} · ${winner ? `${winner.name} ${winner.name === 'You' ? 'win' : 'wins'}${sa === sb ? ' on destruction' : ''}` : 'draw'}`;
+  log.summary = `${rounds ? `Round ${m.round} · ` : ''}${a.name} ${sa} – ${b.name} ${sb} · ${winner ? `${winner.name} ${winner.name === 'You' ? 'win' : 'wins'}${sa === sb ? ' on destruction' : ''}` : 'draw'}`;
   save();
+  // Best of Three: the round goes to the tally of rounds; the match is over at two wins or after round 3
+  if (rounds && winner) m.wins[winner.team]++;
+  const over = !rounds || m.wins.blue >= 2 || m.wins.green >= 2 || m.round >= 3;
+  const champ = !rounds ? winner : m.wins.blue !== m.wins.green ? (m.wins.blue > m.wins.green ? a : b) : null;
+  if (over && champ) tally[champ.team]++;
   screen = 'result'; bar('', []);
-  show(`<h1>${winner ? (m.mode === 'bot' && winner.team === 'blue' ? 'You win' : `${winner.name} wins`) : 'Draw'}</h1>
+  const play = m.mode === 'bot' ? 'bot' : 'pass';
+  show(`<h1>${rounds && !over ? `Round ${m.round}: ${won(winner)}` : won(champ)}</h1>
     <p>Plushies standing: ${a.name} ${sa} · ${b.name} ${sb}${sa === sb ? ' (tie, decided by destruction)' : ''}</p>
     <p>Knocked off: ${Math.round(dealtA * 100)}% of ${m.mode === 'bot' ? "the bot's" : `${b.name}'s`} fort · ${Math.round(dealtB * 100)}% of ${m.mode === 'bot' ? 'yours' : `${a.name}'s`}</p>
-    <p class="small">${m.rec.id ? `Game ${m.rec.id} · ` : ''}Match time ${(ms / 60000).toFixed(1)} min · tonight: Blue ${tally.blue}, Green ${tally.green}</p>
-    <div class="row"><button id="r-again">Rematch</button><button id="r-watch" class="quiet">Watch replay</button><button id="r-menu" class="quiet">Menu</button></div>`);
-  on('r-again', () => newMatch(m.mode === 'bot' ? 'bot' : 'pass')); on('r-menu', menu);
+    ${rounds ? `<p><b>Rounds: ${a.name} ${m.wins.blue} · ${b.name} ${m.wins.green}</b></p>` : ''}
+    <p class="small">${m.rec.id ? `Game ${m.rec.id} · ` : ''}${MODES[m.rules].name} · ${(ms / 60000).toFixed(1)} min · tonight: Blue ${tally.blue}, Green ${tally.green}</p>
+    <div class="row">${over ? '<button id="r-again">Rematch</button>' : '<button id="r-next">Next round</button>'}<button id="r-watch" class="quiet">Watch replay</button><button id="r-menu" class="quiet">Menu</button></div>`);
+  if (over) on('r-again', () => newMatch(play, m.rules));
+  else on('r-next', () => newMatch(play, 'rounds', m.round + 1, m.wins));
+  on('r-menu', menu);
   on('r-watch', () => watch(log, m.rec.id));
 }
 function status(extra?: string): void {
-  if (match?.mode === 'online') return onlineBar();
+  if (match?.mode === 'online') return onlineBar(extra);
   const m = match!, s = m.sides[m.shooter], [a, b] = m.sides;
   const tap = AMMO[m.loaded].tap, ammo = `${AMMO[m.loaded].name}${tap ? ` (tap in flight: ${tap})` : ''}`;
+  const plushies = `plushies ${a.name} ${a.range!.standing()} – ${b.name} ${b.range!.standing()}`;
+  if (m.race) {
+    bar(`${tag()}${raceClock(m)} · ${extra ?? (reloading(m) ? 'Reloading…' : `Your shot · ${ammo}`)} · ${plushies}`, [['Menu', menu]]);
+    return;
+  }
   const you = m.mode === 'bot', who = s.bot ? `The bot is shooting at your fort` : `${you ? 'Your turn' : `${s.name} shoots`} · ${ammo}`;
-  bar(`${tag()}Volley ${m.volley}/${VOLLEYS} · ${extra ?? (m.shotsLeft > 0 ? who : '…')} · plushies ${a.name} ${a.range!.standing()} – ${b.name} ${b.range!.standing()}`, [['Menu', menu]]);
+  const when = m.rules === 'rounds' ? `Round ${m.round}/3` : `Volley ${m.volley}/${spec(m).volleys}`;
+  bar(`${tag()}${when} · ${extra ?? (m.shotsLeft > 0 ? who : '…')} · ${plushies}`, [['Menu', menu]]);
+}
+const reloading = (m: Match) => !!m.race && clock - m.race.lastFire < (spec(m).reload ?? 0) * 1000;
+function raceClock(m: Match): string {
+  const left = Math.max(0, Math.ceil(spec(m).clock! - (clock - m.race!.start) / 1000));
+  const t = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
+  return m.race!.footsteps && !m.race!.over ? `${t} · Footsteps on the stairs!` : t;
 }
 function passThen(title: string, text: string, next: () => void): void {
   show(`<h1>${title}</h1><p>${text}</p><div class="row"><button id="p-go">Ready</button></div>`);
@@ -344,7 +448,7 @@ function watchTick(dt: number): void {
 function watchBar(): void {
   const w = watching!, s = w.log.shots[w.i]; if (!s) return;
   const name = (t: Team) => w.log.sides[t === 'blue' ? 0 : 1].name;
-  const text = `Replay${w.id ? ` of game ${w.id}` : ''} · Volley ${s.volley}/${VOLLEYS} · ${name(s.by)}, shot ${s.n} of ${SHOTS} · plushies ${name('blue')} ${w.ranges.blue.standing()} – ${name('green')} ${w.ranges.green.standing()}`;
+  const text = `Replay${w.id ? ` of game ${w.id}` : ''} · ${w.log.rules === 'race' ? 'Before Mum' : `Volley ${s.volley}`} · ${name(s.by)}, shot ${s.n} · plushies ${name('blue')} ${w.ranges.blue.standing()} – ${name('green')} ${w.ranges.green.standing()}`;
   if (text !== barLeft.textContent) bar(text, [['Menu', menu]]);
 }
 function endWatch(): void {
@@ -364,12 +468,14 @@ function endWatch(): void {
 interface Online {
   conn: RoomConn; code: string; seat: Seat | null; phase: Phase; seats: SeatInfo[]; setup: MatchSetup | null;
   puppet: Puppet | null; view: 'target' | 'own'; sentFort: number; lastSnap: number; note: string; barKey: string;
+  /** The mode this phone asks for when it starts a match (the host picks it in the menu). */
+  rules: Rules;
 }
 let online: Online | null = null;
 const roomLink = (code: string) => `${location.origin}/r/${code}`;
 const them = (): Seat => (1 - (online?.seat ?? 0)) as Seat;
 
-function hostRoom(): void { const code = newCode(); history.pushState(null, '', `/r/${code}`); joinRoom(code); }
+function hostRoom(rules: Rules): void { const code = newCode(); history.pushState(null, '', `/r/${code}`); joinRoom(code, rules); }
 function askCode(): void {
   show(`<h1>Join a friend</h1><p>Type the four letters from your friend's screen.</p>
     <div class="row"><input id="j-code" class="code" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD"></div>
@@ -380,12 +486,12 @@ function askCode(): void {
   on('j-go', go); on('j-back', menu);
   input.onkeydown = e => { if (e.key === 'Enter') go(); };
 }
-function joinRoom(code: string): void {
+function joinRoom(code: string, rules: Rules = 'siege'): void {
   quitMatch(); leaveRoom();
   match = null; builder = null; watching = null; timers.length = 0;
   screen = 'lobby'; bar('', [['Leave', menu]]);
   show(`<h1>Room ${code}</h1><p>Connecting…</p>`);
-  const o: Online = { conn: null as unknown as RoomConn, code, seat: null, phase: 'lobby', seats: [], setup: null, puppet: null, view: 'target', sentFort: 0, lastSnap: 0, note: '', barKey: '' };
+  const o: Online = { conn: null as unknown as RoomConn, code, seat: null, phase: 'lobby', seats: [], setup: null, puppet: null, view: 'target', sentFort: 0, lastSnap: 0, note: '', barKey: '', rules };
   online = o;
   o.conn = new RoomConn(code, onRoom, open => { if (online === o) { o.note = open ? '' : 'Reconnecting…'; onlineBar(); } },
     () => ({ t: 'hello', player: playerId(), app: __APP__, device: deviceInfo() }));
@@ -402,7 +508,7 @@ function onRoom(m: S2C): void {
       if (m.match) o.setup = m.match;
       if (m.phase === 'lobby') {
         lobby();
-        if (o.seat === 0 && m.seats.every(x => x.here)) o.conn.send({ t: 'start', draw: makeDraw(rng), schedule: makeSchedule(rng) });
+        if (o.seat === 0 && m.seats.every(x => x.here)) startOnline(o.rules, 1);
       } else if (m.phase === 'build' && fresh) { onlineMatch(m.match!); build(o.seat!); }
       else if (m.phase === 'build' && o.sentFort === o.setup?.n) waitingCard();
       else if (m.phase === 'siege' && !match && m.match) onlineMatch(m.match);   // back after a reload: the 'siege' message follows
@@ -420,10 +526,14 @@ function onRoom(m: S2C): void {
     case 'result': return onlineResult(m);
   }
 }
+/** Ask the room for a match: the first, a rematch, or Best of Three's next round. */
+function startOnline(rules: Rules, round: number): void {
+  online?.conn.send({ t: 'start', draw: makeDraw(rng), schedule: scheduleFor(rules, round), rules, round });
+}
 function lobby(): void {
   const o = online!, friend = o.seats.filter(x => x.here).length > 1;
   screen = 'lobby';
-  show(`<h1>Room ${o.code}</h1>${friend ? '<p>Your friend is here. Starting…</p>' : `
+  show(`<h1>Room ${o.code}</h1><p class="small">${MODES[o.rules].name}</p>${friend ? '<p>Your friend is here. Starting…</p>' : `
     <p>Send your friend this link, or let them tap <b>Join a friend</b> and type <b>${o.code}</b>.</p>
     <p class="link">${roomLink(o.code)}</p>
     <div class="row">${'share' in navigator ? '<button id="l-share">Share link</button>' : ''}<button id="l-copy" class="quiet">Copy link</button></div>
@@ -442,8 +552,11 @@ function onlineMatch(setup: MatchSetup): void {
   const draw = setup.draw as Draw, schedule = setup.schedule as Ammo[][];
   const log: GameLog = { v: 1, app: __APP__, mode: 'online', started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw, schedule,
     sides: sides.map(x => ({ team: x.team, name: x.name, bot: false, fort: null })) as [SideLog, SideLog], shots: [], volleys: [], winner: null, summary: '' };
-  match = { mode: 'online', draw, sides, volley: 1, shooter: me, shotsLeft: SHOTS, lava: 0, lavaShown: 0, started: clock, busy: false,
-    rec: new Recorder(log, false), schedule, hand: [], loaded: 'marble', botPlan: null };
+  const rules = (setup.rules in MODES ? setup.rules : 'siege') as Rules;
+  o.rules = rules;
+  match = { mode: 'online', draw, sides, volley: 1, shooter: me, shotsLeft: 0, lava: 0, lavaShown: 0, started: clock, busy: false,
+    rec: new Recorder(log, false), schedule, hand: [], loaded: 'marble', botPlan: null,
+    rules, round: setup.round || 1, wins: { blue: setup.wins?.[0] ?? 0, green: setup.wins?.[1] ?? 0 }, race: null };
   o.puppet = null; o.view = 'target';
 }
 function sendFort(fort: Piece[], buildMs: number, tests: number): void {
@@ -468,6 +581,7 @@ function onlineSiege(forts: Piece[][], volley: number, resume?: { snap: unknown 
   Object.assign(m, { volley, lava: volley - 1, lavaShown: volley - 1, shooter: me });
   builder = null; screen = 'siege'; hide(); layout();
   if (resume?.done) { m.busy = true; m.hand = []; m.shotsLeft = 0; o.view = 'own'; onlineBar(); }
+  else if (m.rules === 'race') { startRace(); onlineBar(); }
   else beginOnlineTurn(resume?.fired ?? []);
 }
 /** Both players shoot at once: this phone's two shots of the volley, in the order the player picks. */
@@ -491,7 +605,8 @@ function beginOnlineTurn(fired: string[]): void {
 /** This phone's volley is over: report the target, then watch your own fort take the other player's shots. */
 function onlineDone(): void {
   const m = match!, o = online!, r = target();
-  o.conn.send({ t: 'done', volley: m.volley, standing: r.standing(), destroyed: r.destruction(), shots: m.rec.log.shots.filter(x => x.volley === m.volley) });
+  const shots = m.race ? m.rec.log.shots : m.rec.log.shots.filter(x => x.volley === m.volley);
+  o.conn.send({ t: 'done', volley: m.volley, standing: r.standing(), destroyed: r.destruction(), shots });
   m.busy = true; o.view = 'own'; onlineBar();
 }
 function onlineRise(volley: number): void {
@@ -511,9 +626,15 @@ function onlineResult(res: Extract<S2C, { t: 'result' }>): void {
   show(`<h1>${head}</h1>
     <p>Plushies standing: You ${res.standing[me]} · ${SEAT_NAME[t]} ${res.standing[t]}${res.standing[0] === res.standing[1] ? ' (tie, decided by destruction)' : ''}</p>
     <p>Knocked off: ${pct(res.destroyed[t])} of ${SEAT_NAME[t]}'s fort · ${pct(res.destroyed[me])} of yours</p>
-    <p class="small">${res.game ? `Game ${res.game} · ` : ''}Room ${o.code}</p>
-    <div class="row"><button id="r-again">Rematch</button>${res.game ? '<button id="r-watch" class="quiet">Watch replay</button>' : ''}<button id="r-menu" class="quiet">Leave</button></div>`);
-  on('r-again', () => { o.conn.send({ t: 'start', draw: makeDraw(rng), schedule: makeSchedule(rng) }); show(`<h1>Rematch</h1><p>Starting…</p>`); });
+    ${res.rules === 'rounds' ? `<p><b>Rounds: You ${res.wins[me]} · ${SEAT_NAME[t]} ${res.wins[t]}</b></p>` : ''}
+    <p class="small">${res.game ? `Game ${res.game} · ` : ''}${MODES[o.rules].name} · Room ${o.code}</p>
+    <div class="row">${res.over ? '<button id="r-again">Rematch</button>' : '<button id="r-again">Next round</button>'}${res.game ? '<button id="r-watch" class="quiet">Watch replay</button>' : ''}<button id="r-menu" class="quiet">Leave</button></div>`);
+  if (res.rules === 'rounds' && !res.over) document.querySelector('.card h1')!.textContent = `Round ${res.round}: ${head}`;
+  else if (res.rules === 'rounds') {
+    const champ = res.wins[0] !== res.wins[1] ? (res.wins[0] > res.wins[1] ? 0 : 1) : null;
+    document.querySelector('.card h1')!.textContent = champ === null ? 'Draw' : champ === me ? 'You win the match' : `${SEAT_NAME[champ]} wins the match`;
+  }
+  on('r-again', () => { startOnline(o.rules, res.over ? 1 : res.round + 1); show(`<h1>${res.over ? 'Rematch' : `Round ${res.round + 1}`}</h1><p>Starting…</p>`); });
   if (res.game) on('r-watch', () => { location.href = `/?watch=${res.game}`; });
   on('r-menu', menu);
 }
@@ -528,14 +649,16 @@ function streamSnap(): void {
   o.conn.send({ t: 'snap', snap: r.snap(m.lavaShown) });
   if (now % 500 < 70) onlineBar();   // plushie counts change as snapshots arrive
 }
-function onlineBar(): void {
+function onlineBar(extra?: string): void {
   const o = online, m = match;
   if (!o || !m || screen !== 'siege') return;
+  if (extra) o.note = extra;
   const t = them(), own = o.puppet?.cur, mine = own ? o.puppet!.pieces.filter((p, i) => p.type === 'plush' && !(own.p[i][3] & 1)).length : 3;
   const tap = AMMO[m.loaded].tap;
-  const turn = !m.busy && m.shotsLeft > 0 ? `Your shot · ${AMMO[m.loaded].name}${tap ? ` (tap in flight: ${tap})` : ''}` : o.view === 'own' ? 'Your fort' : 'Waiting';
+  const turn = m.race && reloading(m) && !m.busy ? 'Reloading…' : !m.busy && m.shotsLeft > 0 ? `Your shot · ${AMMO[m.loaded].name}${tap ? ` (tap in flight: ${tap})` : ''}` : o.view === 'own' ? 'Your fort' : 'Waiting';
   const away = o.seats[t] && !o.seats[t].here ? ` · ${SEAT_NAME[t]} is offline` : '';
-  const left = `${tag()}Volley ${m.volley}/${VOLLEYS} · ${o.note || turn}${away} · plushies You ${mine} – ${SEAT_NAME[t]} ${target().standing()}`;
+  const when = m.race ? raceClock(m) : m.rules === 'rounds' ? `Round ${m.round}/3` : `Volley ${m.volley}/${spec(m).volleys}`;
+  const left = `${tag()}${when} · ${o.note || turn}${away} · plushies You ${mine} – ${SEAT_NAME[t]} ${target().standing()}`;
   const key = `${left}|${o.view}`;
   if (key === o.barKey) return;
   o.barKey = key;
@@ -562,7 +685,7 @@ canvas.addEventListener('pointerdown', e => {
   if (screen === 'build' && builder) { pointerId = e.pointerId; canvas.setPointerCapture(e.pointerId); builder.down(e.offsetX, e.offsetY); return; }
   if (screen !== 'siege' || !match || match.busy || match.sides[match.shooter].bot || (match.mode === 'online' && online?.view === 'own')) return;
   if (target().state === 'flight') { target().ability(); return; }   // a tap anywhere triggers the ammo's ability
-  if (match.shotsLeft <= 0 || target().state !== 'aim') return;
+  if (match.shotsLeft <= 0 || target().state !== 'aim' || reloading(match) || match.race?.over) return;
   const slot = ammoSlots().find(sl => Math.hypot(e.offsetX - sl.x, e.offsetY - sl.y) < sl.r + 8);
   if (slot) { match.loaded = slot.ammo; status(); return; }
   if (e.offsetX > cssW * 0.55) return;
@@ -612,8 +735,9 @@ function tick(dt: number): void {
   if (screen === 'siege' && match) {
     match.lavaShown += Math.sign(match.lava - match.lavaShown) * Math.min(Math.abs(match.lava - match.lavaShown), dt * 0.8);
     for (const s of match.sides) s.range?.tick(dt, match.lavaShown);
+    if (match.race) raceTick();
     if (match.mode === 'online') streamSnap();
-    else if (match.sides[match.shooter].bot) botTap();
+    else if (match.sides[match.shooter].bot && !match.race) botTap(target(), match.botPlan);
   }
   if (screen === 'watch' && watching) watchTick(dt);
 }
@@ -630,6 +754,11 @@ function draw(): void {
     if (screen === 'siege' && human && !match.busy) drawSlots();
     const f = r.flight, a = r.ammoAt();
     if (human && f && a && !f.tapped && AMMO[f.ammo].tap) tapHint(cam.sx(a.x), cam.sy(a.y), AMMO[f.ammo].r * cam.k);
+    if (match.race && screen === 'siege') {   // your own fort, small, while you both shoot
+      const own = match.mode === 'online' ? online?.puppet : null, mine = match.sides[match.shooter];
+      const snap = own ? own.view(performance.now()) : mine.range?.snap(match.lavaShown);
+      if (snap) drawInset(snap, own ? own.pieces : mine.fort, mine.team);
+    }
   }
   else if (screen === 'watch' && watching) {
     const s = watching.log.shots[watching.i];
@@ -651,6 +780,10 @@ function drawSlots(): void {
     ctx.fillStyle = '#FBF6EC'; ctx.beginPath(); ctx.arc(0, 0, sl.r, 0, Math.PI * 2); ctx.fill();
     ctx.lineWidth = on ? 4 : 2; ctx.strokeStyle = on ? team : '#2E2A33'; ctx.beginPath(); ctx.arc(0, 0, sl.r + (on ? 1 : 0), 0, Math.PI * 2); ctx.stroke();
     drawAmmo(ctx, sl.ammo, sl.ammo === 'balloon' ? sl.r * 0.55 : sl.ammo === 'jacks' ? sl.r * 0.62 : sl.r * 0.5, 0);
+    if (m.race && reloading(m)) {   // the reload, as a shrinking veil over the stickers
+      const f = 1 - (clock - m.race.lastFire) / ((spec(m).reload ?? 1) * 1000);
+      ctx.fillStyle = 'rgba(46,42,51,0.45)'; ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, sl.r, -Math.PI / 2, -Math.PI / 2 + f * Math.PI * 2); ctx.closePath(); ctx.fill();
+    }
     ctx.restore();
   }
 }
@@ -672,7 +805,9 @@ function frame(now: number): void {
 
 // Dev hook for automated checks without a visible tab (Vite dev server, or a local `npm run dev:worker`).
 if (import.meta.env.DEV || location.hostname === 'localhost') Object.assign(window, { __fk: {
-  start: (mode: 'pass' | 'bot') => { sawHowTo = true; newMatch(mode); document.getElementById('p-go')?.click(); },
+  start: (mode: 'pass' | 'bot', rules: Rules = 'siege') => { sawHowTo = true; newMatch(mode, rules); document.getElementById('p-go')?.click(); },
+  host: (rules: Rules = 'siege') => hostRoom(rules),
+  match: () => match && { rules: match.rules, round: match.round, wins: match.wins, volley: match.volley, lava: match.lava, race: match.race && { ...match.race, t: (clock - match.race.start) / 1000 } },
   online: () => online && { seat: online.seat, phase: online.phase, view: online.view, n: online.setup?.n, game: online.setup?.game, puppet: !!online.puppet?.cur, screen },
   load: (i: number) => { builder?.load(BOT_FORTS[i]); buildBar(); },
   ready: () => { if (builder && !builder.blocker) buildDone?.(); },

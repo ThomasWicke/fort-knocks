@@ -8,6 +8,7 @@ import { RUG_W, TRAY, TRAY_ORDER, priceOf, trayKindOf, type Piece, type Plushie,
 import { P, drawPiece, drawPlush } from './draw';
 import { artReady, drawPlushSprite, drawRug } from './art';
 import { AMMO } from './ammo';
+import { MODES } from './modes';
 import type { GameLog, ShotLog, Team } from './record';
 
 interface Row { id: number; created_at: string; updated_at: string; log: GameLog }
@@ -39,7 +40,7 @@ function card(row: Row): HTMLElement {
   const { log } = row, el = document.createElement('article');
   el.className = 'card';
   const when = new Date(row.created_at).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-  const mode = log.mode === 'bot' ? 'against the bot' : 'pass and play';
+  const mode = `${MODES[log.rules ?? 'siege'].name}${log.round && log.rules === 'rounds' ? `, round ${log.round}` : ''} · ${log.mode === 'bot' ? 'against the bot' : log.mode === 'online' ? 'online' : 'pass and play'}`;
   const mins = log.result ? ` · ${(log.result.ms / 60000).toFixed(1)} min` : '';
   const state = log.status === 'done' ? '' : log.status === 'quit' ? '' : ' · unfinished';
   el.innerHTML = `

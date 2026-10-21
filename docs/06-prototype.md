@@ -141,3 +141,20 @@ M6 was planned as a thin relay ahead of Phase 7's rooms. The friend MVP needs th
 - **Reloads mid-match:** the phone gets its seat back, rebuilds its target from the last snapshot, and continues its volley with the ammo it hasn't fired yet. Shots fired before the reload stay in the log.
 - **Rematch** starts a new match in the same room, with a new draw and a new game number.
 - **Tested** with two browser tabs against the local Worker: lobby, both building, simultaneous volleys with abilities, lava, the result, a rematch, and a reload mid-volley. The online game log replays exactly. Not yet tested: two real phones on mobile networks.
+
+## 9. The three modes (M4)
+All three run on one match engine (`client/src/modes.ts`), as Phase 2 asked. The menu picks the mode, and the online host's pick applies to the room. Numbers from `04-systems.md` §11:
+
+| | The Siege | Best of Three | Before Mum Comes In |
+|---|---|---|---|
+| Build | 90 s, budget 30 | 45 / 60 / 75 s, budget 12 / 18 / 24 | 75 s, budget 24 |
+| Shots | 2 per volley, 3 volleys | 2 / 3 / 4 per round | unlimited, 5 s reload |
+| Ammo | the schedule, shown while building | drawn per round, as varied as possible | the schedule on a loop |
+| Lava | +1 after volleys 1 and 2 | off | +1 every 30 s |
+| End | after volley 3, or a fort wiped | two rounds won | Mum opens the door at 2:00 (footsteps at 0:30 left), or a fort cleared |
+| Play | pass, bot, online | pass, bot, online | bot, online (it has no turns) |
+
+- **The build clocks are soft.** They count down and say "time's up", but nothing is forced: a forced Ready would need an automatic fix for broken rules. If friends dawdle, the data will show it.
+- **In the race your own fort sits in a corner window,** live (against the bot) or streamed (online), so you can follow what happens to it.
+- **Best of Three logs each round as its own game,** so every round can be replayed.
+- **Not yet: the Siege's repair** (patch and tape between volleys). It's the next step.

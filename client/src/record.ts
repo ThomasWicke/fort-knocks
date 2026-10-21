@@ -3,6 +3,7 @@
 // shot as (step, pull) on its target's range (range.ts explains why that is enough).
 import type { Draw, Piece, Plushie } from './fort';
 import type { Ammo } from './ammo';
+import type { Rules } from './modes';
 import type { ShotRec } from './range';
 
 export type Team = 'blue' | 'green';
@@ -23,6 +24,8 @@ export interface GameLog {
   v: 1;
   app: string;                       // build (git commit)
   mode: 'pass' | 'bot' | 'online';
+  /** The mode's rules (modes.ts; absent before M4: the Siege) and, in Best of Three, the round. */
+  rules?: Rules; round?: number;
   started: string;                   // ISO time
   device: string;
   status: 'building' | 'siege' | 'done' | 'quit';

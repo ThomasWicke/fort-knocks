@@ -14,13 +14,13 @@ export const SEAT_NAME = ['Blue', 'Green'] as const;
 
 export interface SeatInfo { here: boolean; ready: boolean }
 /** One match in the room. n counts matches (rematches), game is its number in the game log. */
-export interface MatchSetup { n: number; draw: unknown; schedule: unknown; game: number | null }
+export interface MatchSetup { n: number; draw: unknown; schedule: unknown; game: number | null; rules: string; round: number; wins: number[] }
 
 export type C2S =
   /** On every (re)connect. player: a random id kept on the device, so a reconnect gets its seat back. */
   | { t: 'hello'; player: string; app: string; device: string }
-  /** Start a match (when both are here) or a rematch. The phone rolls the draw and the ammo schedule. */
-  | { t: 'start'; draw: unknown; schedule: unknown }
+  /** Start a match (when both are here), a rematch, or Best of Three's next round. The phone rolls the draw and the ammo. */
+  | { t: 'start'; draw: unknown; schedule: unknown; rules: string; round: number }
   /** Ready: this phone's fort for match n. */
   | { t: 'fort'; n: number; fort: unknown[]; buildMs: number; tests: number }
   /** A snapshot of the opponent's fort, as simulated on this phone (relayed to its owner). */
@@ -40,4 +40,4 @@ export type S2C =
   | { t: 'shot'; shot: unknown; ammo: string }
   | { t: 'volley'; volley: number }
   | { t: 'rise'; volley: number }
-  | { t: 'result'; standing: number[]; destroyed: number[]; winner: Seat | null; game: number | null };
+  | { t: 'result'; standing: number[]; destroyed: number[]; winner: Seat | null; game: number | null; rules: string; round: number; wins: number[]; over: boolean };

@@ -37,9 +37,9 @@ export class Builder {
   private lastPy = 0;   // the finger's height, so the box can light up under it
   private w = 0; private h = 0; private top = 0;
 
-  constructor(public team: 'blue' | 'green', draw: Draw, now: number) { this.left = { ...draw }; this.started = now; }
+  constructor(public team: 'blue' | 'green', draw: Draw, now: number, public budget = BUDGET) { this.left = { ...draw }; this.started = now; }
 
-  get budgetLeft(): number { return BUDGET - this.spent; }
+  get budgetLeft(): number { return this.budget - this.spent; }
   get plushiesPlaced(): number { return this.pieces.filter(p => p.type === 'plush').length; }
   /** What still stands between this fort and Ready, in words; null when it's ready. */
   get blocker(): string | null {
