@@ -13,13 +13,13 @@ const load = (src: string): HTMLImageElement => { const i = new Image(); i.decod
 const ready = (i: HTMLImageElement) => i.complete && i.naturalWidth > 0;
 
 // ---------- the room ----------
-// Three backdrops were generated; ?room=a|b|c picks one (remembered on this device), c is the default.
+// Three backdrops were generated; ?backdrop=a|b|c picks one (remembered on this device), c is the default.
 // seam: the image row where the wall meets the lava floor. It sits at world y = 1, a little behind the rug.
 const ROOMS = { a: { seam: 513 }, b: { seam: 589 }, c: { seam: 604 } } as const;
 type RoomKey = keyof typeof ROOMS;
 const ROOM_PX = 47.3, ROOM_X0 = -18.5, SEAM_Y = 1;   // image px per cell; world x of the image's left edge
 function pickRoom(): RoomKey {
-  const q = new URLSearchParams(location.search).get('room');
+  const q = new URLSearchParams(location.search).get('backdrop');
   try {
     if (q && q in ROOMS) localStorage.setItem('fk-room', q);
     const s = localStorage.getItem('fk-room');

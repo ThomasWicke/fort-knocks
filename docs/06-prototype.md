@@ -117,7 +117,7 @@ Each type is now the best on a different fort. The jacks take out two or more pl
 
 ## 7. The first art pass (80/20)
 Thomas loved the concept art and asked for "a touch of it" while he playtests. These changes take the most from the least:
-- **The room is one illustration** (`docs/concept/game-art/backdrop-*.png`, made with the Codex pipeline and both of Thomas's favourite concepts as references). It shows the wall with the kid's crayon volcano and dragon, a rainy window, the masking-tape border between the siblings, and the floor flooded with lava. The playfield stays empty, and the image is placed in world coordinates, so the lava line matches the physics. Three versions exist: `?room=a|b|c` switches between them (remembered per device); c is the default.
+- **The room is one illustration** (`docs/concept/game-art/backdrop-*.png`, made with the Codex pipeline and both of Thomas's favourite concepts as references). It shows the wall with the kid's crayon volcano and dragon, a rainy window, the masking-tape border between the siblings, and the floor flooded with lava. The playfield stays empty, and the image is placed in world coordinates, so the lava line matches the physics. Three versions exist: `?backdrop=a|b|c` switches between them (remembered per device); c is the default.
 - **The rug is an island** in the lava: an illustrated sprite in team colours (blue stripes or green stripes).
 - **The plushies are the illustrated sprites** from the style frame, with the bandana recoloured per team. Out plushies turn grey.
 - **The type from `docs/style.md`:** Lilita One for titles, Baloo 2 for the interface, Gochi Hand for what the kid writes.
