@@ -22,7 +22,7 @@ export interface SideLog {
 export interface GameLog {
   v: 1;
   app: string;                       // build (git commit)
-  mode: 'pass' | 'bot';
+  mode: 'pass' | 'bot' | 'online';
   started: string;                   // ISO time
   device: string;
   status: 'building' | 'siege' | 'done' | 'quit';
@@ -50,10 +50,11 @@ export class Recorder {
   private busy = false;
   private again = false;
 
-  constructor(public log: GameLog) { this.save(); }
+  /** enabled: false for online matches, whose room keeps the log (party/room.ts). */
+  constructor(public log: GameLog, private enabled = true) { void this.save(); }
 
   async save(): Promise<void> {
-    if (!ENABLED) return;
+    if (!ENABLED || !this.enabled) return;
     if (this.busy) { this.again = true; return; }
     this.busy = true;
     try {
@@ -69,7 +70,7 @@ export class Recorder {
 
   /** The page is going away (app switched, tab closed): a last fire-and-forget copy. */
   beacon(): void {
-    if (!ENABLED || this.id === null) return;
+    if (!ENABLED || !this.enabled || this.id === null) return;
     navigator.sendBeacon(`/api/games/${this.id}`, new Blob([JSON.stringify(this.log)], { type: 'application/json' }));
   }
 }

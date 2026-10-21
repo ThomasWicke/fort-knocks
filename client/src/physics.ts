@@ -115,6 +115,10 @@ export class World {
   setKinematic(id: number, on: boolean): void {
     this.b.b2Body_SetType(this.bodies[id]!, on ? this.b.b2BodyType.b2_kinematicBody : this.b.b2BodyType.b2_dynamicBody);
   }
+  setTransform(id: number, x: number, y: number, angle: number): void {
+    this.b.b2Body_SetTransform(this.bodies[id]!, new this.b.b2Vec2(x, y), this.b.b2MakeRot(angle));
+    this.b.b2Body_SetLinearVelocity(this.bodies[id]!, new this.b.b2Vec2(0, 0)); this.b.b2Body_SetAngularVelocity(this.bodies[id]!, 0);
+  }
   impulse(id: number, ix: number, iy: number): void { this.b.b2Body_ApplyLinearImpulseToCenter(this.bodies[id]!, new this.b.b2Vec2(ix, iy), true); }
   setFriction(id: number, f: number): void { for (const s of this.shapes[id]) this.b.b2Shape_SetFriction(s, f); }
   mass(id: number): number { return this.b.b2Body_GetMass(this.bodies[id]!); }

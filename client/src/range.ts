@@ -245,48 +245,117 @@ export class Range {
     return { x: p.x, y: p.y, vx: v.x, vy: v.y };
   }
 
-  draw(c: CanvasRenderingContext2D, cam: Cam, o: { pull: Pull | null; lava: number; boil: number; launcher: boolean; w: number; h: number; loaded?: Ammo | null }): void {
-    const { sx, sy, k } = cam;
-    drawRoom(c, cam, o.w, o.h);
-    drawRug(c, cam, this.team);
-    const backTop = { x: ANCHOR.x - 0.38, y: ANCHOR.y }, frontTop = { x: ANCHOR.x + 0.38, y: ANCHOR.y }, pp = this.pouch(o.pull);
-    if (o.launcher) {
-      const bk = rrPath(sx(BOOK.x - BOOK.hw), sy(BOOK.y + BOOK.hh), BOOK.hw * 2 * k, BOOK.hh * 2 * k, 3);
-      c.fillStyle = P.bookOx; c.fill(bk); c.fillStyle = P.cream; c.fillRect(sx(BOOK.x - BOOK.hw + 0.3), sy(BOOK.y + BOOK.hh - 0.12), (BOOK.hw * 2 - 0.4) * k, (BOOK.hh * 2 - 0.24) * k);
-      c.lineWidth = 2.2; c.strokeStyle = P.ink; c.stroke(bk);
-      pencil(c, cam, backTop.x, true);
-      if (this.state === 'aim') band(c, cam, backTop, pp);
-    }
-    for (const e of this.entries) {
-      if (e.gone) continue;
-      const t = this.world.transform(e.id);
-      c.save(); c.translate(sx(t.x), sy(t.y)); c.rotate(-t.angle);
-      if (e.lost) c.globalAlpha = Math.max(0, 1 - (this.steps - e.lostAt) / LOST_FADE);
-      if (e.piece.type === 'plush') { if (!drawPlushSprite(c, e.piece.plush!, this.team, k, e.out)) drawPlush(c, e.piece.plush!, e.piece.w * k, e.piece.h * k, e.out, this.team === 'blue' ? P.blue : P.green); }
-      else drawPiece(c, e.piece, k);
-      if (e.wet) wet(c, e.piece, k, this.steps);
-      c.restore();
-    }
-    if (o.lava > 0) risenLava(c, cam, o.lava, o.boil);
-    const f = this.flight;
-    if (f) for (const id of f.ids) {
-      const m = this.world.transform(id), spin = this.steps * (f.drill > 0 ? 0.9 : 0.25);
-      c.save(); c.translate(sx(m.x), sy(m.y));
-      if (f.ammo === 'jacks' && f.tapped) { c.rotate(-m.angle); drawJack(c, JACK.arm * 1.25 * k); }
-      else if (f.ammo === 'top') drawTop(c, AMMO.top.r * k, spin);
-      else { if (f.ammo !== 'balloon') c.rotate(-m.angle); drawAmmo(c, f.ammo, AMMO[f.ammo].r * k, this.steps / 60); }
-      c.restore();
-    }
-    for (const fx of this.fx) drawFx(c, fx, sx(fx.x), sy(fx.y), k, this.steps - fx.at, o.boil);
-    if (o.launcher) {
-      if (this.state === 'aim') { const l = o.loaded ?? 'marble'; c.save(); c.translate(sx(pp.x), sy(pp.y)); drawAmmo(c, l, AMMO[l].r * k, 0); c.restore(); }
-      pencil(c, cam, frontTop.x, false);
-      band(c, cam, frontTop, this.state === 'aim' ? pp : backTop);
-      dots(c, cam, this.lastTrail, 2, 'rgba(74,70,80,0.35)', 3);
-      if (o.pull && Math.hypot(o.pull.x, o.pull.y) >= MIN_PULL) dots(c, cam, previewArc(pp, launchVelocity(o.pull)), 3, P.graphite, 1);
-    }
+  /** The range as plain data: what drawing needs, and what the attacker's phone streams to the fort's owner. */
+  snap(lava: number): Snap {
+    const r3 = (n: number) => Math.round(n * 1000) / 1000, f = this.flight;
+    return {
+      steps: this.steps, lava, aiming: this.state === 'aim',
+      p: this.entries.map(e => {
+        const t = e.gone ? { x: 0, y: 0, angle: 0 } : this.world.transform(e.id);
+        const flags = (e.out ? 1 : 0) | (e.lost ? 2 : 0) | (e.gone ? 4 : 0) | (e.wet ? 8 : 0);
+        return [r3(t.x), r3(t.y), r3(t.angle), flags, e.lost ? Math.min(1, (this.steps - e.lostAt) / LOST_FADE) : 0];
+      }),
+      ammo: f && f.ids.length ? { kind: f.ammo, tapped: f.tapped, drilling: f.drill > 0, b: f.ids.map(id => { const t = this.world.transform(id); return [r3(t.x), r3(t.y), r3(t.angle)]; }) } : null,
+      fx: this.fx.map(x => ({ ...x })),
+    };
+  }
+
+  /** Rebuild a range from a snapshot (a phone that reloaded mid-match takes its target back from the room). */
+  static fromSnap(blueprint: Piece[], team: 'blue' | 'green', s: Snap): Range {
+    const r = new Range(blueprint, team);
+    r.entries.forEach((e, i) => {
+      const [x, y, a, flags] = s.p[i];
+      e.out = !!(flags & 1); e.down = e.out; e.lost = !!(flags & 2); e.wet = !!(flags & 8);
+      if (flags & 4) { r.world.remove(e.id); e.gone = true; return; }
+      r.world.setTransform(e.id, x, y, a);
+      if (e.wet) r.world.setFriction(e.id, SPLASH.wetFriction);
+      if (e.lost) e.lostAt = s.steps - LOST_FADE - 1;
+    });
+    r.steps = s.steps;
+    return r;
+  }
+
+  draw(c: CanvasRenderingContext2D, cam: Cam, o: SceneOpts): void {
+    drawScene(c, cam, this.entries.map(e => e.piece), this.team, this.snap(o.lava), o, this.lastTrail);
   }
 }
+
+/** Everything needed to draw a range, as plain data. p: per piece, in blueprint order: x, y, angle, flags
+ *  (1 out, 2 knocked off, 4 gone, 8 wet), and how far a knocked-off piece has faded (0..1). */
+export interface Snap {
+  steps: number; lava: number; aiming: boolean;
+  p: [number, number, number, number, number][];
+  ammo: { kind: Ammo; tapped: boolean; drilling: boolean; b: [number, number, number][] } | null;
+  fx: Fx[];
+}
+export interface SceneOpts { pull: Pull | null; lava: number; boil: number; launcher: boolean; w: number; h: number; loaded?: Ammo | null }
+
+/** Draw a range from a snapshot: the live range, or the streamed picture of your own fort. */
+export function drawScene(c: CanvasRenderingContext2D, cam: Cam, pieces: Piece[], team: 'blue' | 'green', s: Snap, o: SceneOpts, trail: [number, number][] = []): void {
+  const { sx, sy, k } = cam;
+  drawRoom(c, cam, o.w, o.h);
+  drawRug(c, cam, team);
+  const backTop = { x: ANCHOR.x - 0.38, y: ANCHOR.y }, frontTop = { x: ANCHOR.x + 0.38, y: ANCHOR.y };
+  const pp = o.pull ? { x: ANCHOR.x - o.pull.x, y: ANCHOR.y - o.pull.y } : { ...ANCHOR };
+  if (o.launcher) {
+    const bk = rrPath(sx(BOOK.x - BOOK.hw), sy(BOOK.y + BOOK.hh), BOOK.hw * 2 * k, BOOK.hh * 2 * k, 3);
+    c.fillStyle = P.bookOx; c.fill(bk); c.fillStyle = P.cream; c.fillRect(sx(BOOK.x - BOOK.hw + 0.3), sy(BOOK.y + BOOK.hh - 0.12), (BOOK.hw * 2 - 0.4) * k, (BOOK.hh * 2 - 0.24) * k);
+    c.lineWidth = 2.2; c.strokeStyle = P.ink; c.stroke(bk);
+    pencil(c, cam, backTop.x, true);
+    if (s.aiming) band(c, cam, backTop, pp);
+  }
+  pieces.forEach((piece, i) => {
+    const [x, y, a, flags, fade] = s.p[i];
+    if (flags & 4) return;
+    c.save(); c.translate(sx(x), sy(y)); c.rotate(-a);
+    if (flags & 2) c.globalAlpha = Math.max(0, 1 - fade);
+    const out = !!(flags & 1);
+    if (piece.type === 'plush') { if (!drawPlushSprite(c, piece.plush!, team, k, out)) drawPlush(c, piece.plush!, piece.w * k, piece.h * k, out, team === 'blue' ? P.blue : P.green); }
+    else drawPiece(c, piece, k);
+    if (flags & 8) wet(c, piece, k, s.steps);
+    c.restore();
+  });
+  if (o.lava > 0) risenLava(c, cam, o.lava, o.boil);
+  const f = s.ammo;
+  if (f) for (const [x, y, a] of f.b) {
+    c.save(); c.translate(sx(x), sy(y));
+    if (f.kind === 'jacks' && f.tapped) { c.rotate(-a); drawJack(c, JACK.arm * 1.25 * k); }
+    else if (f.kind === 'top') drawTop(c, AMMO.top.r * k, s.steps * (f.drilling ? 0.9 : 0.25));
+    else { if (f.kind !== 'balloon') c.rotate(-a); drawAmmo(c, f.kind, AMMO[f.kind].r * k, s.steps / 60); }
+    c.restore();
+  }
+  for (const fx of s.fx) drawFx(c, fx, sx(fx.x), sy(fx.y), k, s.steps - fx.at, o.boil);
+  if (o.launcher) {
+    if (s.aiming) { const l = o.loaded ?? 'marble'; c.save(); c.translate(sx(pp.x), sy(pp.y)); drawAmmo(c, l, AMMO[l].r * k, 0); c.restore(); }
+    pencil(c, cam, frontTop.x, false);
+    band(c, cam, frontTop, s.aiming ? pp : backTop);
+    dots(c, cam, trail, 2, 'rgba(74,70,80,0.35)', 3);
+    if (o.pull && Math.hypot(o.pull.x, o.pull.y) >= MIN_PULL) dots(c, cam, previewArc(pp, launchVelocity(o.pull)), 3, P.graphite, 1);
+  }
+}
+
+/** Your own fort on your phone, while the other phone simulates it: the streamed snapshots, smoothed between arrivals. */
+export class Puppet {
+  private prev: Snap | null = null;
+  cur: Snap | null = null;
+  private at = 0;
+  private gap = 66;
+  constructor(public pieces: Piece[], public team: 'blue' | 'green') {}
+  push(s: Snap, now: number): void {
+    if (this.cur && s.steps < this.cur.steps) return;   // late arrival
+    this.prev = this.cur; this.cur = s;
+    this.gap = Math.min(250, Math.max(30, now - this.at)); this.at = now;
+  }
+  /** The snapshot to draw now: the last two arrivals blended, one arrival behind (smooth, never guessing ahead). */
+  view(now: number): Snap | null {
+    const a = this.prev, b = this.cur;
+    if (!b) return null;
+    if (!a || a.p.length !== b.p.length) return b;
+    const f = Math.min(1, (now - this.at) / this.gap), lerp = (u: number, v: number) => u + (v - u) * f;
+    return { ...b, p: b.p.map((q, i) => { const o = a.p[i]; return o[3] & 4 ? q : [lerp(o[0], q[0]), lerp(o[1], q[1]), lerpAngle(o[2], q[2], f), q[3], q[4]]; }) };
+  }
+}
+const lerpAngle = (a: number, b: number, f: number) => { let d = b - a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; return a + d * f; };
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 

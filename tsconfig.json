@@ -11,5 +11,5 @@
     "isolatedModules": true,
     "noUnusedLocals": true
   },
-  "include": ["client/src"]
+  "include": ["client/src", "party/protocol.ts"]
 }

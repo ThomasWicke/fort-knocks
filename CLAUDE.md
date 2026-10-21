@@ -45,7 +45,8 @@ The Vite dev server doesn't save games, because it has no API. Built code does: 
   - `src/main.ts`: the match flow, input, replays (`?watch=<id>`). `src/record.ts`: the game log. `src/games.ts`: the past-games page.
   - `src/ammo.ts`: the four ammo types, the schedule, their drawings. `src/fx.ts`: crayon effects. `src/sim.ts`: headless balance sweeps (`__fk.sweep(fort, ammo)` in dev).
   - `src/art.ts`: the illustrated room, rug and plushie sprites, placed in world coordinates. The images are in `client/public/art/`, made by `dev/art/make_art.py` from `docs/concept/game-art/` and `docs/concept/sprites/`.
-- `worker.ts`: the Cloudflare Worker. `/api/games` on D1, everything else from `dist/`. `migrations/`: the D1 schema.
+- `worker.ts`: the Cloudflare Worker. `/parties/rooms/<code>` are the online rooms, `/api/games` the game log on D1, everything else comes from `dist/`. `migrations/`: the D1 schema.
+- `party/`: the online room. `protocol.ts` (the messages, shared with the client), `room.ts` (the Durable Object), `games-db.ts` (game-log writes). `client/src/party.ts` is the phone's side.
 - `docs/`: design documents and concept art (`docs/concept/`).
 - `dev/style-frame/`: the Phase 5.3 style frame. A static page; serve the folder over http, because the sprites don't load from file://.
 
@@ -53,7 +54,9 @@ The Vite dev server doesn't save games, because it has no API. Built code does: 
 - GitHub: `git@github.com:ThomasWicke/fort-knocks.git`.
 - **Hosting:** a Cloudflare Worker named `fort-knocks` with static assets (`wrangler.jsonc`), at https://fort-knocks.thomaswi1998.workers.dev. Not Pages: wrangler 4.151 folds new Pages projects into Workers, and the Worker is where the rooms go anyway.
 - **Game log:** every match on the deployed game is saved in the D1 database `fort-knocks` (binding `DB`, table `games`, one JSON log per match, see `client/src/record.ts`). Thomas quotes game numbers in feedback. Read a game with `wrangler d1 execute … --remote` or `GET /api/games/<id>`, and watch it at `/?watch=<id>`. Replays are exact because the ranges only advance in counted steps (`range.ts`); a replay's end card reports drift.
-- **Multiplayer (Phase 7):** Durable Objects through `partyserver` in the same Worker (single origin), as in `../fabricator`. PartyKit's shared zone no longer accepts new projects. Wrangler is logged in to Thomas's Cloudflare account.
+- **Online rooms:** Durable Objects through `partyserver` in the same Worker (binding `Rooms`, class `FortRoom`), as in `../fabricator`. A room per four-letter code; the game's link is `/r/<code>`. Each phone simulates the fort it attacks and streams snapshots to the owner (`docs/06-prototype.md` §8).
+  - Test with two tabs against `npm run dev:worker`. The second tab opens `/r/<code>?as=b`, because tabs of one browser share the device's player id.
+  - Wrangler is logged in to Thomas's Cloudflare account.
 
 ## Physics
 Box2D v3 via `box2d3-wasm` (compat build), behind a small physics interface, with Rapier as the fallback. The reasoning and the measurements are in `docs/06-prototype.md`. `dev/physics-spike/spike.mjs` runs the same fort in all three engines (`node spike.mjs`; `node spike.mjs debug` lists the pieces that fall during the settle).

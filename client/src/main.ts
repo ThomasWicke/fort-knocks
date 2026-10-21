@@ -2,6 +2,7 @@
 // then three volleys of two shots each, with the lava rising after every volley. Most plushies standing wins.
 // Pass and play on one phone, or against a bot. (docs/02-core-design.md §4, docs/06-prototype.md)
 // Every match is logged with a game number (record.ts), and any logged game can be watched again (?watch=<number>).
+// Online (/r/<code>): two phones in one room (party/protocol.ts); each simulates the fort it attacks.
 import '@fontsource/baloo-2/latin-500.css';
 import '@fontsource/baloo-2/latin-700.css';
 import '@fontsource/baloo-2/latin-800.css';
@@ -11,10 +12,12 @@ import { initPhysics } from './physics';
 import wasmUrl from '../../node_modules/box2d3-wasm/build/dist/es/compat/Box2D.compat.wasm?url';
 import { BOT_FORTS, BUDGET, makeDraw, type Draw, type Piece } from './fort';
 import { Builder } from './build';
-import { BOOK, Cam, Range, aimAt, MAX_PULL, type Pull } from './range';
+import { BOOK, Cam, Puppet, Range, aimAt, drawScene, MAX_PULL, type Pull, type Snap } from './range';
 import { HAND } from './draw';
 import { AMMO, drawAmmo, makeSchedule, type Ammo } from './ammo';
-import { Recorder, deviceInfo, type GameLog, type ShotLog, type Team } from './record';
+import { Recorder, deviceInfo, type GameLog, type ShotLog, type SideLog, type Team } from './record';
+import { RoomConn, newCode, playerId } from './party';
+import { SEAT_NAME, SEAT_TEAM, type MatchSetup, type Phase, type S2C, type Seat, type SeatInfo } from '../../party/protocol';
 
 const VOLLEYS = 3, SHOTS = 2, VIEW = { x0: -17, x1: 12.5, y0: -2.2, y1: 11.3 }, BAR = 44;
 // Finger travel for a full pull, in css px. It used to be 2 cells of screen, about 50 px on a phone, where a few
@@ -29,7 +32,7 @@ const overlay = document.getElementById('overlay')!;
 
 interface Side { team: Team; name: string; bot: boolean; fort: Piece[]; range: Range | null }
 interface Match {
-  mode: 'pass' | 'bot'; draw: Draw; sides: [Side, Side];
+  mode: 'pass' | 'bot' | 'online'; draw: Draw; sides: [Side, Side];
   volley: number; shooter: 0 | 1; shotsLeft: number; lava: number; lavaShown: number; started: number; busy: boolean;
   rec: Recorder;
   /** The ammo schedule: two per volley, the same for both players, known while building. */
@@ -39,7 +42,7 @@ interface Match {
   /** The bot's plan for the shot in flight: where it aimed, so it knows when to tap. */
   botPlan: { x: number; y: number } | null;
 }
-let screen: 'menu' | 'build' | 'siege' | 'result' | 'watch' = 'menu';
+let screen: 'menu' | 'lobby' | 'build' | 'siege' | 'result' | 'watch' = 'menu';
 let match: Match | null = null, builder: Builder | null = null, buildDone: (() => void) | null = null;
 let clock = 0, boil = 0, cssW = 0, cssH = 0, sawHowTo = false;
 const cam = new Cam(), tally: Record<Team, number> = { blue: 0, green: 0 };
@@ -51,18 +54,20 @@ const rng = Math.random;
 
 // ---------- screens ----------
 function menu(): void {
-  quitMatch();
+  quitMatch(); leaveRoom();
   screen = 'menu'; match = null; builder = null; watching = null; timers.length = 0;
-  if (location.search) history.replaceState(null, '', '/');
+  if (location.search || location.pathname !== '/') history.replaceState(null, '', '/');
   bar('', []);
-  show(`<h1>Fort Knocks</h1><p>Prototype · one match of The Siege</p>
-    <div class="row"><button id="m-pass">Pass and play</button><button id="m-bot">Play against a bot</button></div>
+  show(`<h1>Fort Knocks</h1><p>Prototype · The Siege</p>
+    <div class="row"><button id="m-host">Play a friend online</button><button id="m-join" class="quiet">Join a friend</button></div>
+    <div class="row"><button id="m-pass" class="quiet">Pass and play</button><button id="m-bot" class="quiet">Play against a bot</button></div>
     <p class="small">Build a fort from the toy box and put your three plushies on top. Then knock the other fort down: a plushie that touches the rug or the lava is out. Three volleys of two marbles each, and the lava rises after every volley. Most plushies standing wins.</p>
     <p class="small"><a href="/games">Past games</a>: every match is saved with its game number.</p>`);
   on('m-pass', () => newMatch('pass')); on('m-bot', () => newMatch('bot'));
+  on('m-host', hostRoom); on('m-join', askCode);
 }
-function newMatch(mode: Match['mode']): void {
-  quitMatch();
+function newMatch(mode: 'pass' | 'bot'): void {
+  quitMatch(); leaveRoom();
   timers.length = 0;
   const blue: Side = { team: 'blue', name: mode === 'bot' ? 'You' : 'Blue', bot: false, fort: [], range: null };
   const green: Side = { team: 'green', name: mode === 'bot' ? 'Bot' : 'Green', bot: mode === 'bot', fort: [], range: null };
@@ -96,6 +101,7 @@ function build(i: 0 | 1): void {
     const b = builder!, sl = m.rec.log.sides[i];
     side.fort = b.pieces.map(p => ({ ...p })); builder = null; buildDone = null;
     Object.assign(sl, { fort: side.fort, buildMs: Math.round(clock - b.started), tests: b.tests });
+    if (m.mode === 'online') return sendFort(side.fort, Math.round(clock - b.started), b.tests);
     if (i === 0 && m.mode === 'pass') {
       m.rec.log.summary = 'Green building'; save();
       passThen('Green builds', 'Blue, look away while Green builds. Same toy box, same budget.', () => build(1));
@@ -150,6 +156,7 @@ function shoot(p: Pull, how?: Pick<ShotLog, 'raw' | 'aimMs'>): void {
   m.hand.splice(m.hand.indexOf(m.loaded), 1);
   const shot: ShotLog = Object.assign(range.shots[range.shots.length - 1], { volley: m.volley, by: m.sides[m.shooter].team, n: SHOTS - m.shotsLeft + 1 }, how);
   m.rec.log.shots.push(shot);
+  if (m.mode === 'online') online?.conn.send({ t: 'shot', shot, ammo: shot.ammo });
 }
 function beginTurn(): void {
   const m = match!, shooter = m.sides[m.shooter], range = target();
@@ -236,10 +243,11 @@ function result(): void {
     <p>Knocked off: ${Math.round(dealtA * 100)}% of ${m.mode === 'bot' ? "the bot's" : `${b.name}'s`} fort · ${Math.round(dealtB * 100)}% of ${m.mode === 'bot' ? 'yours' : `${a.name}'s`}</p>
     <p class="small">${m.rec.id ? `Game ${m.rec.id} · ` : ''}Match time ${(ms / 60000).toFixed(1)} min · tonight: Blue ${tally.blue}, Green ${tally.green}</p>
     <div class="row"><button id="r-again">Rematch</button><button id="r-watch" class="quiet">Watch replay</button><button id="r-menu" class="quiet">Menu</button></div>`);
-  on('r-again', () => newMatch(m.mode)); on('r-menu', menu);
+  on('r-again', () => newMatch(m.mode === 'bot' ? 'bot' : 'pass')); on('r-menu', menu);
   on('r-watch', () => watch(log, m.rec.id));
 }
 function status(extra?: string): void {
+  if (match?.mode === 'online') return onlineBar();
   const m = match!, s = m.sides[m.shooter], [a, b] = m.sides;
   const tap = AMMO[m.loaded].tap, ammo = `${AMMO[m.loaded].name}${tap ? ` (tap in flight: ${tap})` : ''}`;
   const you = m.mode === 'bot', who = s.bot ? `The bot is shooting at your fort` : `${you ? 'Your turn' : `${s.name} shoots`} · ${ammo}`;
@@ -251,7 +259,7 @@ function passThen(title: string, text: string, next: () => void): void {
 }
 const ammoPair = (m: Match, volley: number): string => m.schedule[volley - 1].map(a => AMMO[a].name.toLowerCase()).join(' and ');
 /** "#12 · " once the game has its number. */
-const tag = (): string => (match?.rec.id ? `#${match.rec.id} · ` : '');
+const tag = (): string => (online?.setup?.game ? `#${online.setup.game} · ` : match?.rec.id ? `#${match.rec.id} · ` : '');
 /** Bring the log up to date with the ranges, then send it. */
 function save(): void {
   const m = match; if (!m) return;
@@ -350,6 +358,190 @@ function endWatch(): void {
   on('w-again', () => watch(w.log, id)); on('w-menu', menu);
 }
 
+// ---------- online: two phones, one room ----------
+// This phone simulates the other fort (its target) and streams it to its owner; its own fort is a Puppet of the
+// snapshots the other phone streams back. The room (party/room.ts) waits for both phones at each step.
+interface Online {
+  conn: RoomConn; code: string; seat: Seat | null; phase: Phase; seats: SeatInfo[]; setup: MatchSetup | null;
+  puppet: Puppet | null; view: 'target' | 'own'; sentFort: number; lastSnap: number; note: string; barKey: string;
+}
+let online: Online | null = null;
+const roomLink = (code: string) => `${location.origin}/r/${code}`;
+const them = (): Seat => (1 - (online?.seat ?? 0)) as Seat;
+
+function hostRoom(): void { const code = newCode(); history.pushState(null, '', `/r/${code}`); joinRoom(code); }
+function askCode(): void {
+  show(`<h1>Join a friend</h1><p>Type the four letters from your friend's screen.</p>
+    <div class="row"><input id="j-code" class="code" maxlength="4" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCD"></div>
+    <div class="row"><button id="j-go">Join</button><button id="j-back" class="quiet">Back</button></div>`);
+  const input = document.getElementById('j-code') as HTMLInputElement;
+  input.focus();
+  const go = () => { const c = input.value.trim().toUpperCase(); if (/^[A-Z]{4}$/.test(c)) { history.pushState(null, '', `/r/${c}`); joinRoom(c); } };
+  on('j-go', go); on('j-back', menu);
+  input.onkeydown = e => { if (e.key === 'Enter') go(); };
+}
+function joinRoom(code: string): void {
+  quitMatch(); leaveRoom();
+  match = null; builder = null; watching = null; timers.length = 0;
+  screen = 'lobby'; bar('', [['Leave', menu]]);
+  show(`<h1>Room ${code}</h1><p>Connecting…</p>`);
+  const o: Online = { conn: null as unknown as RoomConn, code, seat: null, phase: 'lobby', seats: [], setup: null, puppet: null, view: 'target', sentFort: 0, lastSnap: 0, note: '', barKey: '' };
+  online = o;
+  o.conn = new RoomConn(code, onRoom, open => { if (online === o) { o.note = open ? '' : 'Reconnecting…'; onlineBar(); } },
+    () => ({ t: 'hello', player: playerId(), app: __APP__, device: deviceInfo() }));
+}
+function leaveRoom(): void { if (online) { online.conn.close(); online = null; } }
+
+function onRoom(m: S2C): void {
+  const o = online; if (!o) return;
+  switch (m.t) {
+    case 'room': {
+      if (m.full) { show(`<h1>Room ${m.code} is full</h1><p>Two players are already in it.</p><div class="row"><button id="f-menu">Menu</button></div>`); on('f-menu', menu); return; }
+      const fresh = !!m.match && (!o.setup || o.setup.n !== m.match.n);
+      Object.assign(o, { seat: m.you, phase: m.phase, seats: m.seats });
+      if (m.match) o.setup = m.match;
+      if (m.phase === 'lobby') {
+        lobby();
+        if (o.seat === 0 && m.seats.every(x => x.here)) o.conn.send({ t: 'start', draw: makeDraw(rng), schedule: makeSchedule(rng) });
+      } else if (m.phase === 'build' && fresh) { onlineMatch(m.match!); build(o.seat!); }
+      else if (m.phase === 'build' && o.sentFort === o.setup?.n) waitingCard();
+      else if (m.phase === 'siege' && !match && m.match) onlineMatch(m.match);   // back after a reload: the 'siege' message follows
+      onlineBar();
+      return;
+    }
+    case 'siege': return onlineSiege(m.forts as Piece[][], m.volley, m.resume);
+    case 'snap': o.puppet?.push(m.snap as Snap, performance.now()); return;
+    case 'shot':
+      o.note = `${SEAT_NAME[them()]} fired the ${AMMO[m.ammo as Ammo].name.toLowerCase()}`; onlineBar();
+      later(2500, () => { if (online === o && o.note.includes('fired')) { o.note = ''; onlineBar(); } });
+      return;
+    case 'volley': if (match) { match.volley = m.volley; match.lava = m.volley - 1; beginOnlineTurn([]); } return;
+    case 'rise': return onlineRise(m.volley);
+    case 'result': return onlineResult(m);
+  }
+}
+function lobby(): void {
+  const o = online!, friend = o.seats.filter(x => x.here).length > 1;
+  screen = 'lobby';
+  show(`<h1>Room ${o.code}</h1>${friend ? '<p>Your friend is here. Starting…</p>' : `
+    <p>Send your friend this link, or let them tap <b>Join a friend</b> and type <b>${o.code}</b>.</p>
+    <p class="link">${roomLink(o.code)}</p>
+    <div class="row">${'share' in navigator ? '<button id="l-share">Share link</button>' : ''}<button id="l-copy" class="quiet">Copy link</button></div>
+    <p class="small">Waiting for your friend…</p>`}
+    <div class="row"><button id="l-menu" class="quiet">Leave</button></div>`);
+  on('l-menu', menu);
+  if (friend) return;
+  on('l-copy', () => { navigator.clipboard?.writeText(roomLink(o.code)).then(() => { document.getElementById('l-copy')!.textContent = 'Copied'; }, () => {}); });
+  if ('share' in navigator) on('l-share', () => { navigator.share({ title: 'Fort Knocks', text: `Fort fight? Room ${o.code}`, url: roomLink(o.code) }).catch(() => {}); });
+}
+/** A match as this phone sees it: its own seat is the shooter, the other side is the target it simulates. */
+function onlineMatch(setup: MatchSetup): void {
+  const o = online!, me = o.seat!;
+  timers.length = 0;
+  const sides = ([0, 1] as Seat[]).map(i => ({ team: SEAT_TEAM[i], name: i === me ? 'You' : SEAT_NAME[i], bot: false, fort: [] as Piece[], range: null })) as [Side, Side];
+  const draw = setup.draw as Draw, schedule = setup.schedule as Ammo[][];
+  const log: GameLog = { v: 1, app: __APP__, mode: 'online', started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw, schedule,
+    sides: sides.map(x => ({ team: x.team, name: x.name, bot: false, fort: null })) as [SideLog, SideLog], shots: [], volleys: [], winner: null, summary: '' };
+  match = { mode: 'online', draw, sides, volley: 1, shooter: me, shotsLeft: SHOTS, lava: 0, lavaShown: 0, started: clock, busy: false,
+    rec: new Recorder(log, false), schedule, hand: [], loaded: 'marble', botPlan: null };
+  o.puppet = null; o.view = 'target';
+}
+function sendFort(fort: Piece[], buildMs: number, tests: number): void {
+  const o = online!;
+  o.sentFort = o.setup!.n;
+  o.conn.send({ t: 'fort', n: o.setup!.n, fort, buildMs, tests });
+  waitingCard();
+}
+function waitingCard(): void {
+  screen = 'lobby'; bar(`${tag()}Room ${online!.code}`, [['Leave', menu]]);
+  show(`<h1>Ready!</h1><p>Waiting for ${SEAT_NAME[them()]} to finish their fort…</p>`);
+}
+function onlineSiege(forts: Piece[][], volley: number, resume?: { snap: unknown | null; fired: string[]; done: boolean }): void {
+  const o = online!, m = match;
+  if (!m || o.seat === null) return;
+  const me = o.seat, t = them(), snap = resume?.snap as Snap | null | undefined;
+  m.sides[me].fort = forts[me]; m.sides[t].fort = forts[t];
+  const r = snap ? Range.fromSnap(forts[t], SEAT_TEAM[t], snap) : new Range(forts[t], SEAT_TEAM[t]);
+  if (!snap) r.settle(3);
+  m.sides[t].range = r; m.sides[me].range = null;
+  o.puppet = new Puppet(forts[me], SEAT_TEAM[me]);
+  Object.assign(m, { volley, lava: volley - 1, lavaShown: volley - 1, shooter: me });
+  builder = null; screen = 'siege'; hide(); layout();
+  if (resume?.done) { m.busy = true; m.hand = []; m.shotsLeft = 0; o.view = 'own'; onlineBar(); }
+  else beginOnlineTurn(resume?.fired ?? []);
+}
+/** Both players shoot at once: this phone's two shots of the volley, in the order the player picks. */
+function beginOnlineTurn(fired: string[]): void {
+  const m = match!, o = online!, range = target();
+  const hand = [...m.schedule[m.volley - 1]];
+  for (const f of fired) { const i = hand.indexOf(f as Ammo); if (i >= 0) hand.splice(i, 1); }
+  Object.assign(m, { hand, loaded: hand[0] ?? 'marble', shotsLeft: hand.length, busy: false });
+  o.view = 'target';
+  range.onShotDone = () => {
+    m.shotsLeft--;
+    if (m.hand.length) m.loaded = m.hand[0];
+    onlineBar();
+    if (m.shotsLeft > 0) return;
+    const t0 = clock, wait = () => (range.quiet() || clock - t0 > 3000 ? later(400, onlineDone) : later(100, wait));
+    wait();
+  };
+  if (!hand.length) onlineDone();
+  onlineBar();
+}
+/** This phone's volley is over: report the target, then watch your own fort take the other player's shots. */
+function onlineDone(): void {
+  const m = match!, o = online!, r = target();
+  o.conn.send({ t: 'done', volley: m.volley, standing: r.standing(), destroyed: r.destruction(), shots: m.rec.log.shots.filter(x => x.volley === m.volley) });
+  m.busy = true; o.view = 'own'; onlineBar();
+}
+function onlineRise(volley: number): void {
+  const m = match, o = online!;
+  if (!m) return;
+  m.lava = volley; m.busy = true; o.note = 'The lava rises'; onlineBar();
+  later(1800, () => {
+    const r = target();
+    o.conn.send({ t: 'lava', volley, standing: r.standing(), destroyed: r.destruction(), drowned: r.drowned });
+    o.note = ''; onlineBar();
+  });
+}
+function onlineResult(res: Extract<S2C, { t: 'result' }>): void {
+  const o = online!, me = o.seat ?? 0, t = them(), pct = (x: number) => `${Math.round(x * 100)}%`;
+  screen = 'result'; bar('', []);
+  const head = res.winner === null ? 'Draw' : res.winner === me ? 'You win' : `${SEAT_NAME[res.winner]} wins`;
+  show(`<h1>${head}</h1>
+    <p>Plushies standing: You ${res.standing[me]} · ${SEAT_NAME[t]} ${res.standing[t]}${res.standing[0] === res.standing[1] ? ' (tie, decided by destruction)' : ''}</p>
+    <p>Knocked off: ${pct(res.destroyed[t])} of ${SEAT_NAME[t]}'s fort · ${pct(res.destroyed[me])} of yours</p>
+    <p class="small">${res.game ? `Game ${res.game} · ` : ''}Room ${o.code}</p>
+    <div class="row"><button id="r-again">Rematch</button>${res.game ? '<button id="r-watch" class="quiet">Watch replay</button>' : ''}<button id="r-menu" class="quiet">Leave</button></div>`);
+  on('r-again', () => { o.conn.send({ t: 'start', draw: makeDraw(rng), schedule: makeSchedule(rng) }); show(`<h1>Rematch</h1><p>Starting…</p>`); });
+  if (res.game) on('r-watch', () => { location.href = `/?watch=${res.game}`; });
+  on('r-menu', menu);
+}
+/** Stream the target to its owner: 15 times a second while anything moves, once a second when it's quiet. */
+function streamSnap(): void {
+  const o = online, m = match;
+  if (!o || !m || screen !== 'siege') return;
+  const r = target(), now = performance.now();
+  const live = r.state === 'flight' || !r.quiet() || Math.abs(m.lava - m.lavaShown) > 0.001;
+  if (now - o.lastSnap < (live ? 66 : 1000)) return;
+  o.lastSnap = now;
+  o.conn.send({ t: 'snap', snap: r.snap(m.lavaShown) });
+  if (now % 500 < 70) onlineBar();   // plushie counts change as snapshots arrive
+}
+function onlineBar(): void {
+  const o = online, m = match;
+  if (!o || !m || screen !== 'siege') return;
+  const t = them(), own = o.puppet?.cur, mine = own ? o.puppet!.pieces.filter((p, i) => p.type === 'plush' && !(own.p[i][3] & 1)).length : 3;
+  const tap = AMMO[m.loaded].tap;
+  const turn = !m.busy && m.shotsLeft > 0 ? `Your shot · ${AMMO[m.loaded].name}${tap ? ` (tap in flight: ${tap})` : ''}` : o.view === 'own' ? 'Your fort' : 'Waiting';
+  const away = o.seats[t] && !o.seats[t].here ? ` · ${SEAT_NAME[t]} is offline` : '';
+  const left = `${tag()}Volley ${m.volley}/${VOLLEYS} · ${o.note || turn}${away} · plushies You ${mine} – ${SEAT_NAME[t]} ${target().standing()}`;
+  const key = `${left}|${o.view}`;
+  if (key === o.barKey) return;
+  o.barKey = key;
+  bar(left, [[o.view === 'own' ? 'Their fort' : 'Your fort', () => { o.view = o.view === 'own' ? 'target' : 'own'; onlineBar(); }], ['Leave', menu]]);
+}
+
 // ---------- DOM helpers ----------
 function bar(left: string, buttons: [string, () => void, boolean?][]): void {
   barLeft.textContent = left; barRight.replaceChildren();
@@ -368,7 +560,7 @@ function on(id: string, fn: () => void): void { document.getElementById(id)!.onc
 canvas.addEventListener('pointerdown', e => {
   if (pointerId !== -1) return;
   if (screen === 'build' && builder) { pointerId = e.pointerId; canvas.setPointerCapture(e.pointerId); builder.down(e.offsetX, e.offsetY); return; }
-  if (screen !== 'siege' || !match || match.busy || match.sides[match.shooter].bot) return;
+  if (screen !== 'siege' || !match || match.busy || match.sides[match.shooter].bot || (match.mode === 'online' && online?.view === 'own')) return;
   if (target().state === 'flight') { target().ability(); return; }   // a tap anywhere triggers the ammo's ability
   if (match.shotsLeft <= 0 || target().state !== 'aim') return;
   const slot = ammoSlots().find(sl => Math.hypot(e.offsetX - sl.x, e.offsetY - sl.y) < sl.r + 8);
@@ -419,15 +611,20 @@ function tick(dt: number): void {
   if (screen === 'build') { builder?.tick(dt); buildBar(); }
   if (screen === 'siege' && match) {
     match.lavaShown += Math.sign(match.lava - match.lavaShown) * Math.min(Math.abs(match.lava - match.lavaShown), dt * 0.8);
-    for (const s of match.sides) s.range!.tick(dt, match.lavaShown);
-    if (match.sides[match.shooter].bot) botTap();
+    for (const s of match.sides) s.range?.tick(dt, match.lavaShown);
+    if (match.mode === 'online') streamSnap();
+    else if (match.sides[match.shooter].bot) botTap();
   }
   if (screen === 'watch' && watching) watchTick(dt);
 }
 function draw(): void {
   const o = { boil, launcher: true, w: cssW, h: cssH };
   if (screen === 'build' && builder) builder.draw(ctx, boil);
-  else if ((screen === 'siege' || screen === 'result') && match) {
+  else if (screen === 'siege' && match?.mode === 'online' && online?.view === 'own') {
+    const p = online.puppet, s = p?.view(performance.now());
+    if (p && s) drawScene(ctx, cam, p.pieces, p.team, s, { ...o, pull: null, lava: s.lava, loaded: null });
+  }
+  else if ((screen === 'siege' || screen === 'result') && match && target()) {
     const r = target(), human = !match.sides[match.shooter].bot;
     r.draw(ctx, cam, { ...o, pull: pull ?? botPull, lava: match.lavaShown, loaded: match.shotsLeft > 0 ? match.loaded : null });
     if (screen === 'siege' && human && !match.busy) drawSlots();
@@ -475,7 +672,8 @@ function frame(now: number): void {
 
 // Dev hook for automated checks without a visible tab (Vite dev server, or a local `npm run dev:worker`).
 if (import.meta.env.DEV || location.hostname === 'localhost') Object.assign(window, { __fk: {
-  start: (mode: Match['mode']) => { sawHowTo = true; newMatch(mode); document.getElementById('p-go')?.click(); },
+  start: (mode: 'pass' | 'bot') => { sawHowTo = true; newMatch(mode); document.getElementById('p-go')?.click(); },
+  online: () => online && { seat: online.seat, phase: online.phase, view: online.view, n: online.setup?.n, game: online.setup?.game, puppet: !!online.puppet?.cur, screen },
   load: (i: number) => { builder?.load(BOT_FORTS[i]); buildBar(); },
   ready: () => { if (builder && !builder.blocker) buildDone?.(); },
   go: () => document.getElementById('p-go')?.click(),
@@ -495,7 +693,7 @@ if (import.meta.env.DEV || location.hostname === 'localhost') Object.assign(wind
   await initPhysics(wasmUrl);
   layout();
   new ResizeObserver(layout).observe(canvas);
-  const id = Number(new URLSearchParams(location.search).get('watch'));
-  if (id) void watchById(id); else menu();
+  const id = Number(new URLSearchParams(location.search).get('watch')), room = location.pathname.match(/^\/r\/([A-Za-z]{4})\/?$/);
+  if (id) void watchById(id); else if (room) joinRoom(room[1].toUpperCase()); else menu();
   requestAnimationFrame(frame);
 })();

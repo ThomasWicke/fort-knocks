@@ -1,12 +1,16 @@
-// Cloudflare Worker entry. One origin serves two things:
+// Cloudflare Worker entry. One origin serves three things:
+//   /parties/rooms/<code> → an online room (party/room.ts), a Durable Object per room, over a WebSocket
 //   /api/games…  → the game log in D1: every match played, so playtest feedback can name a game ("game 12, shot 3")
 //   everything else → the built client (assets binding, SPA fallback)
-// The client keeps the whole match record and sends it in full at each checkpoint (client/src/record.ts),
-// so every write is an idempotent replace and a lost request costs nothing.
+import { routePartykitRequest } from 'partyserver';
+import { insertGame, updateGame, type LogHead } from './party/games-db';
+import { FortRoom } from './party/room';
 
+export { FortRoom };
+
+// Local matches: the client keeps the whole match record and sends it in full at each checkpoint
+// (client/src/record.ts), so every write is an idempotent replace and a lost request costs nothing.
 const MAX_LOG = 256 * 1024;   // a full match is a few KB; this only keeps junk out
-
-interface LogHead { v?: number; app?: string; mode?: string; status?: string; winner?: string | null; summary?: string }
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
@@ -20,11 +24,11 @@ async function readLog(req: Request): Promise<{ text: string; head: LogHead } | 
   if (!head || typeof head !== 'object' || head.v !== 1) return json({ error: 'unknown log format' }, 400);
   return { text, head };
 }
-const cols = (h: LogHead) => [h.app ?? null, h.mode ?? null, h.status ?? null, h.winner ?? null, h.summary ?? null];
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url), path = url.pathname.replace(/\/+$/, '');
+    if (path.startsWith('/parties/')) return (await routePartykitRequest(req, env as never)) ?? json({ error: 'no such room' }, 404);
     if (!path.startsWith('/api/games')) return json({ error: 'not found' }, 404);
     const idMatch = path.match(/^\/api\/games\/(\d+)$/), id = idMatch ? Number(idMatch[1]) : null;
 
@@ -37,9 +41,7 @@ export default {
     // a new match: returns its game number
     if (path === '/api/games' && req.method === 'POST') {
       const got = await readLog(req); if (got instanceof Response) return got;
-      const row = await env.DB.prepare('INSERT INTO games (app, mode, status, winner, summary, log) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
-        .bind(...cols(got.head), got.text).first<{ id: number }>();
-      return json({ id: row!.id });
+      return json({ id: await insertGame(env.DB, got.text, got.head) });
     }
     if (id !== null && req.method === 'GET') {
       const r = await env.DB.prepare('SELECT id, created_at, updated_at, log FROM games WHERE id = ?').bind(id).first();
@@ -48,9 +50,7 @@ export default {
     // a checkpoint: PUT from the game, POST from navigator.sendBeacon when the page closes
     if (id !== null && (req.method === 'PUT' || req.method === 'POST')) {
       const got = await readLog(req); if (got instanceof Response) return got;
-      const res = await env.DB.prepare(`UPDATE games SET app = ?, mode = ?, status = ?, winner = ?, summary = ?, log = ?,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).bind(...cols(got.head), got.text, id).run();
-      return res.meta.changes ? json({ id }) : json({ error: 'no such game' }, 404);
+      return (await updateGame(env.DB, id, got.text, got.head)) ? json({ id }) : json({ error: 'no such game' }, 404);
     }
     return json({ error: 'method not allowed' }, 405);
   },

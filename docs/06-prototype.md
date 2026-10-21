@@ -122,3 +122,22 @@ Thomas loved the concept art and asked for "a touch of it" while he playtests. T
 - **The plushies are the illustrated sprites** from the style frame, with the bandana recoloured per team. Out plushies turn grey.
 - **The type from `docs/style.md`:** Lilita One for titles, Baloo 2 for the interface, Gochi Hand for what the kid writes.
 - **Still code-drawn, as the style guide intends:** pieces, ammo, launcher and crayon effects. The assets are made by `dev/art/make_art.py` (keying and team colours), and the prompts are next to it.
+
+## 8. Online rooms (M6, built as the real thing)
+M6 was planned as a thin relay ahead of Phase 7's rooms. The friend MVP needs the real thing, so it was built once, properly.
+- **Joining:** "Play a friend online" opens a room with a four-letter code and a link (`/r/ABCD`) to share. The friend opens the link, or taps "Join a friend" and types the code. When both are in, the match starts.
+- **Building:** both build at the same time, from the same draw and the same ammo schedule.
+- **Who simulates what:**
+  - Each phone simulates the fort it attacks, so Box2D on the attacker's phone decides what happens to that fort.
+  - It streams snapshots of that fort to the owner: 15 a second while anything moves, once a second when it's quiet.
+  - The owner watches their own fort as a picture (`Puppet`), smoothed between snapshots.
+  - So cross-device determinism is never needed: a phone only ever simulates one fort, and reports that fort's plushie count.
+- **Volleys:** both players shoot at the same time. When a phone's two shots are done and its target is quiet, it reports and switches to "Your fort", to watch the other player's shots land (H5). The room waits for both phones, then raises the lava (each phone on its target), waits for both again, then starts the next volley or ends the match.
+- **The room** (`party/room.ts`, a Durable Object through partyserver, in the same Worker):
+  - It seats the two phones. A phone's id is kept on the device, so a reconnect gets its seat back.
+  - It relays forts, shots and snapshots, and keeps the score.
+  - It writes the game log to D1 itself (mode `online`), so a closed tab never loses a game.
+  - Its state is saved on every change.
+- **Reloads mid-match:** the phone gets its seat back, rebuilds its target from the last snapshot, and continues its volley with the ammo it hasn't fired yet. Shots fired before the reload stay in the log.
+- **Rematch** starts a new match in the same room, with a new draw and a new game number.
+- **Tested** with two browser tabs against the local Worker: lobby, both building, simultaneous volleys with abilities, lava, the result, a rematch, and a reload mid-volley. The online game log replays exactly. Not yet tested: two real phones on mobile networks.
