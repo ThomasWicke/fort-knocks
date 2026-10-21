@@ -166,6 +166,7 @@ Between volleys both players repair their own fort for 20 seconds, out of the ot
 - **Tape:** tap a seam between two pieces to tape it, 1 each, at most 3 per repair. Tape is a weld joint that tears when it carries more than 160 N, about a toy block falling two cells.
 - **Hidden until the volley starts:** patches show as dashed ghosts and tape as a strip. Both land when the next volley begins, on the phone that simulates that fort. Online, the room routes each repair to the other phone.
 - **Replays include repairs:** each repair is logged with the step it landed at, and the replay lands it at the same step.
+- **Replays are exact on the build that played them.** After a physics change (like the heavier plushies), an older game's replay drifts, and its end card says the game came from an earlier version.
 - **The bot repairs too:** it tapes each standing plushie to what it stands on, while its reserve lasts.
 
 **Measured** with `sim.ts`, taping all three plushies to their supports (a whole repair's allowance) against all four ammo types and the three hand-made forts. Shots taking out at least one plushie, of 900:

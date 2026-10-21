@@ -353,7 +353,7 @@ function drawInset(s: Snap, pieces: Piece[], team: Team): void {
   ctx.lineWidth = 2.5; ctx.strokeStyle = '#2E2A33'; ctx.stroke(clip);
   ctx.font = `16px ${HAND}`; ctx.fillStyle = '#2E2A33'; ctx.textAlign = 'left'; ctx.fillText('your fort', x + 8, y + 18);
 }
-const standing = (): Record<Team, number> => ({ blue: match!.sides[0].range!.standing(), green: match!.sides[1].range!.standing() });
+const standing = (): Record<Team, number> => ({ blue: match!.sides[0].range?.standing() ?? 3, green: match!.sides[1].range?.standing() ?? 3 });
 function result(): void {
   const m = match!, [a, b] = m.sides, sa = a.range!.standing(), sb = b.range!.standing();
   const dealtA = b.range!.destruction(), dealtB = a.range!.destruction();   // what each side knocked off the other's fort
@@ -410,7 +410,7 @@ const ammoPair = (m: Match, volley: number): string => m.schedule[volley - 1].ma
 const tag = (): string => (online?.setup?.game ? `#${online.setup.game} · ` : match?.rec.id ? `#${match.rec.id} · ` : '');
 /** Bring the log up to date with the ranges, then send it. */
 function save(): void {
-  const m = match; if (!m) return;
+  const m = match; if (!m || m.mode === 'online') return;   // online matches are logged by their room
   m.sides.forEach((s, i) => { if (s.range) m.rec.log.sides[i].drowned = s.range.drowned; });
   const repairs = m.sides.flatMap(s => s.range?.repairs.map(r => ({ by: s.team, ...r })) ?? []);
   if (repairs.length) m.rec.log.repairs = repairs;
@@ -473,11 +473,16 @@ function nextShot(): void {
   watchBar();
 }
 function watchTick(dt: number): void {
-  const w = watching!, r = w.ranges[w.shown], s = w.log.shots[w.i];
+  const w = watching!, r = w.ranges[w.shown], s = w.log.shots[w.i], pend = w.pending[w.shown];
   w.lavaShown += Math.sign(w.lava - w.lavaShown) * Math.min(Math.abs(w.lava - w.lavaShown), dt * 0.8);
-  if (w.phase === 'end' || !s) { r.tick(dt, w.lava); return; }
+  // every tick stops at the next repair of this fort, which lands at exactly its step
+  const tickTo = (stop: number) => {
+    r.tick(dt, w.lava, Math.min(stop, pend[0]?.step ?? Infinity));
+    while (pend.length && r.steps >= pend[0].step) r.repair(pend.shift()!);
+  };
+  if (w.phase === 'end' || !s) { tickTo(Infinity); return; }
   if (w.phase === 'lead') {
-    r.tick(dt, w.lava, s.step);
+    tickTo(s.step);
     const f = Math.min(1, 1 - (s.step - r.steps) / PULL_STEPS);
     w.pull = f > 0 ? { x: s.pull.x * f, y: s.pull.y * f } : null;
     if (r.steps >= s.step) {
@@ -488,13 +493,13 @@ function watchTick(dt: number): void {
   }
   const next = w.log.shots[w.i + 1], same = !!next && next.by === s.by;   // the same shooter's next shot hits the same range
   const tapAt = w.phase === 'flight' && s.tap !== undefined && !r.flight?.tapped ? s.tap : Infinity;
-  r.tick(dt, w.lava, Math.min(tapAt, w.phase === 'flight' && same ? next.step : Infinity));
+  tickTo(Math.min(tapAt, same ? next.step : Infinity));
   if (r.steps === tapAt) r.ability();
   if (w.phase === 'flight' && r.state === 'aim') {   // this marble is done
-    if (same) { w.i++; w.phase = 'lead'; w.lava = next.volley - 1; watchBar(); }
-    else w.phase = 'after';
+    if (same && next.step - r.steps < LEAD) return nextShot();   // the next shot on this fort follows right away
+    w.phase = 'after';
   }
-  if (w.phase === 'after') { w.wait += dt; if (r.quiet() || w.wait > 3) nextShot(); }
+  if (w.phase === 'after') { w.wait += dt; if (r.quiet() || w.wait > 3 || (same && r.steps >= next.step)) nextShot(); }
   if (watching?.phase !== 'end') watchBar();   // plushie counts change mid-shot
 }
 function watchBar(): void {
@@ -509,6 +514,7 @@ function endWatch(): void {
   show(`<h1>End of ${id ? `game ${id}` : 'the replay'}</h1>
     <p>${w.log.result ? w.log.summary : 'The real game was left before its result.'}</p>
     <p class="small">${w.drift === null ? 'Every shot hit the fort exactly as it stood in the real game.'
+      : w.log.app !== __APP__ ? `This game was played on an earlier version of the game (${w.log.app}), whose physics differed, so from shot ${w.drift + 1} on the replay doesn't match what was played.`
       : `From shot ${w.drift + 1} on, this replay came out differently from the real game (physics can differ slightly between devices), so the rest may not match what was played.`}</p>
     <div class="row"><button id="w-again">Watch again</button><a class="btn quiet" href="/games">All games</a><button id="w-menu" class="quiet">Menu</button></div>`);
   on('w-again', () => watch(w.log, id)); on('w-menu', menu);
@@ -895,6 +901,25 @@ if (import.meta.env.DEV || location.hostname === 'localhost') Object.assign(wind
   fire: (x: number, y: number, ammo?: Ammo) => { if (screen === 'siege') { if (ammo && match!.hand.includes(ammo)) match!.loaded = ammo; shoot({ x, y }); } },
   tap: () => target().ability(),
   // balance sweeps (sim.ts): every ammo type at a bot fort over an angle × power grid
+  // debugging replays: rebuild one fort from a log and report its fingerprint at a step, after its shots and repairs
+  probe: (log: GameLog, team: Team, upTo: number, opts: { lava?: number[]; noRepair?: boolean } = {}) => {
+    const side = log.sides[team === 'blue' ? 0 : 1], r = new Range(side.fort!, team);
+    r.settle(3);
+    type Ev = { step: number; shot?: ShotLog; rep?: Repair };
+    const events: Ev[] = [...log.shots.filter(x => x.by !== team).map(x => ({ step: x.step, shot: x })), ...(opts.noRepair ? [] : (log.repairs ?? []).filter(x => x.by === team).map(x => ({ step: x.step, rep: x })))].sort((a, b) => a.step - b.step);
+    const out: string[] = [];
+    for (const e of events) {
+      if (e.step > upTo) break;
+      const lava = opts.lava?.[0] ?? 0;
+      r.stepTo(e.step, lava);
+      if (e.rep) { r.repair(e.rep); out.push(`repair@${e.step}`); continue; }
+      const sh = e.shot!; out.push(`shot@${sh.step} state ${r.fingerprint()} vs ${sh.state}`);
+      r.fire(sh.pull, sh.ammo);
+      if (sh.tap !== undefined) { r.stepTo(sh.tap, lava); r.ability(); }
+    }
+    r.stepTo(upTo, 0); out.push(`at ${upTo}: ${r.fingerprint()}`);
+    return out;
+  },
   sims: async (n: number, rules: Rules = 'siege', k: { plushDensity?: number; crush?: number; plushFriction?: number } = {}) => { const sim = await import('./sim'); sim.knobs(k); return sim.simMatches(n, rules); },
   botFort: () => botFort(makeDraw(rng), 30, rng),
   sweep: async (fort: number, ammo: Ammo, taped = false, tear?: number) => {
