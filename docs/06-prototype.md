@@ -1,6 +1,6 @@
 # Phase 6: Grey-box prototype, "find the fun"
 
-Status: M1 and **M2 (one complete match) playable** at https://fort-knocks.thomaswi1998.workers.dev (2026-10-20), after two playtest rounds (`06-playtest.md`). Every match is saved with a game number and can be replayed (https://fort-knocks.thomaswi1998.workers.dev/games). Next: a match against a friend. M3 doesn't depend on it.
+Status (2026-10-21): **M3 (ammo) and a first art pass are playable** at https://fort-knocks.thomaswi1998.workers.dev. Every match is saved and can be replayed (`/games`). **Plan change (Thomas):** build M3 to M6 as an MVP at Claude's judgement, then playtest it with a friend and decide from the data.
 
 **Goal:** answer the question no document can, which is whether this is fun. As cheaply as possible, before any production art or networking.
 
@@ -88,3 +88,37 @@ Each milestone ends in something Thomas can play on his phone.
 - **Plan:** the room becomes an **illustrated backdrop** in the key-art style (`icon-7-fall-blue.jpg` as reference), with variants for rainy afternoon and lights out.
 - **Why it can be an image:** it never moves, so it doesn't need to be code.
 - **What stays in code:** everything that moves or breaks, plus the crayon layer.
+
+## 6. M3 as built: four ammo types (2026-10-21)
+- **The ammo schedule:** three volleys of two, every type at least once, never the same type twice in a volley. It's the same for both players, and the build screen shows it ("Incoming"), so a builder can read it (H14). In each turn the shooter picks the order: tap a sticker at the bottom left.
+- **The four types**, all leaving the launcher at the same speed, so the aim preview means the same thing for each:
+
+| Ammo | Body | Tap in flight |
+|---|---|---|
+| Marble | r 0.3, density 4 | none: the pure skill shot |
+| Jacks | a bundle, r 0.3, density 3 | fans out into four jacks (three crossed arms each), ±14° apart |
+| Spinning top | r 0.33, density 4 | stops dead and drops at 6 m/s. It stays a normal body: light pieces give way, a heavy stack stops it |
+| Water balloon | r 0.42, density 1.2 | bursts (it also bursts on its first touch). A push wave of radius 2.6 cells, and everything it reaches is soaked: friction 0.12, so books slide |
+
+- **The crush rule:** a plushie hit directly with a momentum of at least 12 (mass × approach speed) is out, with a puff of stuffing. That's a marble at about two thirds of full power. Measured with Box2D's hit events.
+- **Crayon effects:** impact stars, stuffing puffs, splashes, smoke when a knocked-off piece vanishes, and dust while the top drills. A pulsing "tap!" ring marks ammo that can still be tapped.
+- **Replays include taps:** a shot logs the step its ability fired at, and the replay taps at the same step.
+
+**Tuning with `client/src/sim.ts`** (`__fk.sweep(fort, ammo)`): each ammo type was fired at each of the three bot forts over 15 angles × 5 powers, with a good player's taps. Shots taking out at least one plushie (of 225):
+
+| | First try | Final |
+|---|---|---|
+| Marble | 90 | 79 |
+| Jacks | 87 | 87 |
+| Spinning top | 121 (the drill flattened towers, and crushed whatever it landed on) | 78 |
+| Water balloon | 71 | 82 |
+
+Each type is now the best on a different fort. The jacks take out two or more plushies most often (36 of 225), which is their job: they spread.
+
+## 7. The first art pass (80/20)
+Thomas loved the concept art and asked for "a touch of it" while he playtests. These changes take the most from the least:
+- **The room is one illustration** (`docs/concept/game-art/backdrop-*.png`, made with the Codex pipeline and both of Thomas's favourite concepts as references). It shows the wall with the kid's crayon volcano and dragon, a rainy window, the masking-tape border between the siblings, and the floor flooded with lava. The playfield stays empty, and the image is placed in world coordinates, so the lava line matches the physics. Three versions exist: `?room=a|b|c` switches between them (remembered per device); c is the default.
+- **The rug is an island** in the lava: an illustrated sprite in team colours (blue stripes or green stripes).
+- **The plushies are the illustrated sprites** from the style frame, with the bandana recoloured per team. Out plushies turn grey.
+- **The type from `docs/style.md`:** Lilita One for titles, Baloo 2 for the interface, Gochi Hand for what the kid writes.
+- **Still code-drawn, as the style guide intends:** pieces, ammo, launcher and crayon effects. The assets are made by `dev/art/make_art.py` (keying and team colours), and the prompts are next to it.

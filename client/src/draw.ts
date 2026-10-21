@@ -9,12 +9,15 @@ export const P = {
   blue: '#2F6FDE', green: '#0F7B5F', lava: '#FF5A1F', lavaRed: '#E2341D', lavaGlow: '#FFD27A', graphite: '#4A4650',
 };
 
+/** Type (docs/style.md): Baloo 2 for everything read in passing, Gochi Hand for what the kid writes. */
+export const FONT = '"Baloo 2", system-ui, sans-serif', HAND = '"Gochi Hand", "Baloo 2", cursive';
+
 export function shade(hex: string, f: number): string {
   const n = parseInt(hex.slice(1), 16), k = 1 - f;
   return `rgb(${(((n >> 16) & 255) * k) | 0},${(((n >> 8) & 255) * k) | 0},${((n & 255) * k) | 0})`;
 }
 export function rrPath(x: number, y: number, w: number, h: number, r: number): Path2D {
-  const p = new Path2D(); r = Math.min(r, w / 2, h / 2);
+  const p = new Path2D(); r = Math.max(0, Math.min(r, w / 2, h / 2));   // never negative (a canvas squeezed to nothing)
   p.moveTo(x + r, y); p.arcTo(x + w, y, x + w, y + h, r); p.arcTo(x + w, y + h, x, y + h, r); p.arcTo(x, y + h, x, y, r); p.arcTo(x, y, x + w, y, r); p.closePath();
   return p;
 }

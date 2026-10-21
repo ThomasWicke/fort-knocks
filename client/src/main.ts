@@ -2,10 +2,18 @@
 // then three volleys of two shots each, with the lava rising after every volley. Most plushies standing wins.
 // Pass and play on one phone, or against a bot. (docs/02-core-design.md §4, docs/06-prototype.md)
 // Every match is logged with a game number (record.ts), and any logged game can be watched again (?watch=<number>).
+import '@fontsource/baloo-2/latin-500.css';
+import '@fontsource/baloo-2/latin-700.css';
+import '@fontsource/baloo-2/latin-800.css';
+import '@fontsource/lilita-one/latin-400.css';
+import '@fontsource/gochi-hand/latin-400.css';
 import { initPhysics } from './physics';
+import wasmUrl from '../../node_modules/box2d3-wasm/build/dist/es/compat/Box2D.compat.wasm?url';
 import { BOT_FORTS, BUDGET, makeDraw, type Draw, type Piece } from './fort';
 import { Builder } from './build';
-import { Cam, Range, aimAt, MAX_PULL, type Pull } from './range';
+import { BOOK, Cam, Range, aimAt, MAX_PULL, type Pull } from './range';
+import { HAND } from './draw';
+import { AMMO, drawAmmo, makeSchedule, type Ammo } from './ammo';
 import { Recorder, deviceInfo, type GameLog, type ShotLog, type Team } from './record';
 
 const VOLLEYS = 3, SHOTS = 2, VIEW = { x0: -17, x1: 12.5, y0: -2.2, y1: 11.3 }, BAR = 44;
@@ -24,6 +32,12 @@ interface Match {
   mode: 'pass' | 'bot'; draw: Draw; sides: [Side, Side];
   volley: number; shooter: 0 | 1; shotsLeft: number; lava: number; lavaShown: number; started: number; busy: boolean;
   rec: Recorder;
+  /** The ammo schedule: two per volley, the same for both players, known while building. */
+  schedule: Ammo[][];
+  /** This turn's ammo still to fire, and the one in the band. The shooter picks the order (04-systems §5). */
+  hand: Ammo[]; loaded: Ammo;
+  /** The bot's plan for the shot in flight: where it aimed, so it knows when to tap. */
+  botPlan: { x: number; y: number } | null;
 }
 let screen: 'menu' | 'build' | 'siege' | 'result' | 'watch' = 'menu';
 let match: Match | null = null, builder: Builder | null = null, buildDone: (() => void) | null = null;
@@ -52,13 +66,14 @@ function newMatch(mode: Match['mode']): void {
   timers.length = 0;
   const blue: Side = { team: 'blue', name: mode === 'bot' ? 'You' : 'Blue', bot: false, fort: [], range: null };
   const green: Side = { team: 'green', name: mode === 'bot' ? 'Bot' : 'Green', bot: mode === 'bot', fort: [], range: null };
-  const draw = makeDraw(rng);
+  const draw = makeDraw(rng), schedule = makeSchedule(rng);
   const log: GameLog = {
-    v: 1, app: __APP__, mode, started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw,
+    v: 1, app: __APP__, mode, started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw, schedule,
     sides: [{ team: 'blue', name: blue.name, bot: false, fort: null }, { team: 'green', name: green.name, bot: green.bot, fort: null }],
     shots: [], volleys: [], winner: null, summary: `${blue.name} building`,
   };
-  match = { mode, draw, sides: [blue, green], volley: 1, shooter: 0, shotsLeft: SHOTS, lava: 0, lavaShown: 0, started: clock, busy: false, rec: new Recorder(log) };
+  match = { mode, draw, sides: [blue, green], volley: 1, shooter: 0, shotsLeft: SHOTS, lava: 0, lavaShown: 0, started: clock, busy: false, rec: new Recorder(log),
+    schedule, hand: [], loaded: 'marble', botPlan: null };
   match.rec.onId = () => { if (screen === 'siege') status(); };   // the build bar picks the number up by itself
   if (mode === 'pass') passThen('Blue builds first', 'Green, look away while Blue builds.', () => build(0));
   else build(0);
@@ -75,6 +90,7 @@ function build(i: 0 | 1): void {
   const m = match!, side = m.sides[i];
   screen = 'build'; hide();
   builder = new Builder(side.team, m.draw, clock);
+  builder.schedule = m.schedule;
   layout();
   buildDone = () => {
     const b = builder!, sl = m.rec.log.sides[i];
@@ -123,22 +139,25 @@ function startSiege(): void {
   for (const s of m.sides) { s.range = new Range(s.fort, s.team); s.range.settle(3); }   // both forts settle at once
   m.rec.log.status = 'siege'; save();
   screen = 'siege'; hide(); layout();
-  if (m.mode === 'pass') passThen('Blue shoots', `Volley 1 of ${VOLLEYS}. Hand the phone to Blue.`, beginTurn);
+  if (m.mode === 'pass') passThen('Blue shoots', `Volley 1 of ${VOLLEYS}: ${ammoPair(m, 1)}. Hand the phone to Blue.`, beginTurn);
   else beginTurn();
 }
 const target = (): Range => match!.sides[1 - match!.shooter].range!;
 /** Fire at the current target and log the shot. */
 function shoot(p: Pull, how?: Pick<ShotLog, 'raw' | 'aimMs'>): void {
   const m = match!, range = target();
-  if (!range.fire(p)) return;
+  if (!range.fire(p, m.loaded)) return;
+  m.hand.splice(m.hand.indexOf(m.loaded), 1);
   const shot: ShotLog = Object.assign(range.shots[range.shots.length - 1], { volley: m.volley, by: m.sides[m.shooter].team, n: SHOTS - m.shotsLeft + 1 }, how);
   m.rec.log.shots.push(shot);
 }
 function beginTurn(): void {
   const m = match!, shooter = m.sides[m.shooter], range = target();
-  m.shotsLeft = SHOTS; m.busy = false;
+  m.shotsLeft = SHOTS; m.busy = false; m.hand = [...m.schedule[m.volley - 1]]; m.loaded = m.hand[0];
   range.onShotDone = () => {
-    m.shotsLeft--; status();
+    m.shotsLeft--; m.botPlan = null;
+    if (m.hand.length) m.loaded = m.hand[0];
+    status();
     if (m.shotsLeft > 0) { if (shooter.bot) later(700, botShot); return; }
     // the turn ends once the dust has settled (at most 3 s), so everyone sees what the volley did
     const t0 = clock, wait = () => (range.quiet() || clock - t0 > 3000 ? later(500, endTurn) : later(100, wait));
@@ -152,7 +171,7 @@ function endTurn(): void {
   save();
   if (m.shooter === 0) {
     m.shooter = 1;
-    if (m.mode === 'pass') passThen('Green shoots', `Volley ${m.volley} of ${VOLLEYS}. Hand the phone to Green.`, beginTurn);
+    if (m.mode === 'pass') passThen('Green shoots', `Volley ${m.volley} of ${VOLLEYS}: ${ammoPair(m, m.volley)}. Hand the phone to Green.`, beginTurn);
     else beginTurn();
     return;
   }
@@ -166,16 +185,20 @@ function endTurn(): void {
     if (wiped || m.volley >= VOLLEYS) return result();
     m.volley++; m.shooter = 0;
     save();
-    if (m.mode === 'pass') passThen('Blue shoots', `Volley ${m.volley} of ${VOLLEYS}. Hand the phone to Blue.`, beginTurn);
+    if (m.mode === 'pass') passThen('Blue shoots', `Volley ${m.volley} of ${VOLLEYS}: ${ammoPair(m, m.volley)}. Hand the phone to Blue.`, beginTurn);
     else beginTurn();
   });
 }
 function botShot(): void {
   const m = match!, range = target(), aims = range.plushTargets();
   if (screen !== 'siege' || range.state !== 'aim' || m.shotsLeft <= 0) return;
+  m.loaded = m.hand[Math.floor(rng() * m.hand.length)];
   const t = aims.length ? aims[Math.floor(rng() * aims.length)] : { x: 5, y: 3 };
+  // the top is lobbed high so it arrives above its target and drills down; the rest come in at a middle angle
+  const [lo, span] = m.loaded === 'top' ? [56, 14] : [32, 26];
+  const aimY = m.loaded === 'top' ? t.y + 1.6 : t.y;
   let p: Pull | null = null;
-  for (let tries = 0; tries < 8 && !p; tries++) p = aimAt(t.x + (rng() - 0.5) * 0.6, t.y + (rng() - 0.3) * 0.6, 32 + rng() * 26);
+  for (let tries = 0; tries < 8 && !p; tries++) p = aimAt(t.x + (rng() - 0.5) * 0.6, aimY + (rng() - 0.3) * 0.6, lo + rng() * span);
   p ??= { x: 1.4, y: 1.0 };
   // a decent but human bot: up to 7% of power and 3.5° of angle off (it wiped a fort in four shots at 4% and 1.7°)
   const ang = Math.atan2(p.y, p.x) + (rng() - 0.5) * 0.12, mag = Math.min(MAX_PULL, Math.hypot(p.x, p.y) * (1 + (rng() - 0.5) * 0.14));
@@ -183,9 +206,18 @@ function botShot(): void {
   const pullStep = () => {   // the bot pulls back visibly before letting go
     const f = Math.min(1, (clock - t0) / 700);
     botPull = { x: final.x * f, y: final.y * f };
-    if (f < 1) later(16, pullStep); else later(250, () => { botPull = null; shoot(final); });
+    if (f < 1) later(16, pullStep); else later(250, () => { botPull = null; m.botPlan = { x: t.x, y: t.y }; shoot(final); });
   };
   pullStep();
+}
+/** The bot's tap: jacks scatter just before the fort, the top drills when it's over its target, the balloon bursts close to it. */
+function botTap(): void {
+  const m = match!, range = target(), plan = m.botPlan, a = range.ammoAt(), f = range.flight;
+  if (!plan || !a || !f || f.tapped || !AMMO[f.ammo].tap) return;
+  const go = f.ammo === 'jacks' ? a.x > plan.x - 4.5
+    : f.ammo === 'top' ? Math.abs(a.x - plan.x) < 0.35 && a.y > plan.y + 0.5
+    : Math.hypot(a.x - plan.x, a.y - plan.y) < 1.4;
+  if (go) range.ability();
 }
 const standing = (): Record<Team, number> => ({ blue: match!.sides[0].range!.standing(), green: match!.sides[1].range!.standing() });
 function result(): void {
@@ -209,13 +241,15 @@ function result(): void {
 }
 function status(extra?: string): void {
   const m = match!, s = m.sides[m.shooter], [a, b] = m.sides;
-  const you = m.mode === 'bot', who = s.bot ? `The bot is shooting at your fort` : `${you ? 'Your turn' : `${s.name} shoots`} · shot ${SHOTS - m.shotsLeft + 1} of ${SHOTS}`;
+  const tap = AMMO[m.loaded].tap, ammo = `${AMMO[m.loaded].name}${tap ? ` (tap in flight: ${tap})` : ''}`;
+  const you = m.mode === 'bot', who = s.bot ? `The bot is shooting at your fort` : `${you ? 'Your turn' : `${s.name} shoots`} · ${ammo}`;
   bar(`${tag()}Volley ${m.volley}/${VOLLEYS} · ${extra ?? (m.shotsLeft > 0 ? who : '…')} · plushies ${a.name} ${a.range!.standing()} – ${b.name} ${b.range!.standing()}`, [['Menu', menu]]);
 }
 function passThen(title: string, text: string, next: () => void): void {
   show(`<h1>${title}</h1><p>${text}</p><div class="row"><button id="p-go">Ready</button></div>`);
   on('p-go', () => { hide(); next(); });
 }
+const ammoPair = (m: Match, volley: number): string => m.schedule[volley - 1].map(a => AMMO[a].name.toLowerCase()).join(' and ');
 /** "#12 · " once the game has its number. */
 const tag = (): string => (match?.rec.id ? `#${match.rec.id} · ` : '');
 /** Bring the log up to date with the ranges, then send it. */
@@ -283,13 +317,15 @@ function watchTick(dt: number): void {
     const f = Math.min(1, 1 - (s.step - r.steps) / PULL_STEPS);
     w.pull = f > 0 ? { x: s.pull.x * f, y: s.pull.y * f } : null;
     if (r.steps >= s.step) {
-      r.fire(s.pull); w.pull = null; w.phase = 'flight'; watchBar();
+      r.fire(s.pull, s.ammo ?? 'marble'); w.pull = null; w.phase = 'flight'; watchBar();
       if (s.state !== undefined && r.shots[r.shots.length - 1].state !== s.state) w.drift ??= w.i;   // older logs have no fingerprint
     }
     return;
   }
   const next = w.log.shots[w.i + 1], same = !!next && next.by === s.by;   // the same shooter's next shot hits the same range
-  r.tick(dt, w.lava, w.phase === 'flight' && same ? next.step : Infinity);
+  const tapAt = w.phase === 'flight' && s.tap !== undefined && !r.flight?.tapped ? s.tap : Infinity;
+  r.tick(dt, w.lava, Math.min(tapAt, w.phase === 'flight' && same ? next.step : Infinity));
+  if (r.steps === tapAt) r.ability();
   if (w.phase === 'flight' && r.state === 'aim') {   // this marble is done
     if (same) { w.i++; w.phase = 'lead'; w.lava = next.volley - 1; watchBar(); }
     else w.phase = 'after';
@@ -317,6 +353,7 @@ function endWatch(): void {
 // ---------- DOM helpers ----------
 function bar(left: string, buttons: [string, () => void, boolean?][]): void {
   barLeft.textContent = left; barRight.replaceChildren();
+  barLeft.parentElement!.classList.toggle('bare', !left && !buttons.length);   // no paper strip when there's nothing on it
   for (const [label, fn, waiting] of buttons) {
     const b = document.createElement('button'); b.type = 'button'; b.textContent = label; b.onclick = fn;
     if (waiting) b.classList.add('waiting');   // still tappable, but reads as "not yet"
@@ -331,7 +368,11 @@ function on(id: string, fn: () => void): void { document.getElementById(id)!.onc
 canvas.addEventListener('pointerdown', e => {
   if (pointerId !== -1) return;
   if (screen === 'build' && builder) { pointerId = e.pointerId; canvas.setPointerCapture(e.pointerId); builder.down(e.offsetX, e.offsetY); return; }
-  if (screen !== 'siege' || !match || match.busy || match.sides[match.shooter].bot || match.shotsLeft <= 0 || target().state !== 'aim') return;
+  if (screen !== 'siege' || !match || match.busy || match.sides[match.shooter].bot) return;
+  if (target().state === 'flight') { target().ability(); return; }   // a tap anywhere triggers the ammo's ability
+  if (match.shotsLeft <= 0 || target().state !== 'aim') return;
+  const slot = ammoSlots().find(sl => Math.hypot(e.offsetX - sl.x, e.offsetY - sl.y) < sl.r + 8);
+  if (slot) { match.loaded = slot.ammo; status(); return; }
   if (e.offsetX > cssW * 0.55) return;
   pointerId = e.pointerId; canvas.setPointerCapture(e.pointerId);
   pull = { x: 0, y: 0 }; aim = { x: e.offsetX, y: e.offsetY, t: e.timeStamp, seen: [{ t: e.timeStamp, p: pull }] };
@@ -379,15 +420,51 @@ function tick(dt: number): void {
   if (screen === 'siege' && match) {
     match.lavaShown += Math.sign(match.lava - match.lavaShown) * Math.min(Math.abs(match.lava - match.lavaShown), dt * 0.8);
     for (const s of match.sides) s.range!.tick(dt, match.lavaShown);
+    if (match.sides[match.shooter].bot) botTap();
   }
   if (screen === 'watch' && watching) watchTick(dt);
 }
 function draw(): void {
   const o = { boil, launcher: true, w: cssW, h: cssH };
   if (screen === 'build' && builder) builder.draw(ctx, boil);
-  else if ((screen === 'siege' || screen === 'result') && match) target().draw(ctx, cam, { ...o, pull: pull ?? botPull, lava: match.lavaShown });
-  else if (screen === 'watch' && watching) watching.ranges[watching.shown].draw(ctx, cam, { ...o, pull: watching.pull, lava: watching.lavaShown });
+  else if ((screen === 'siege' || screen === 'result') && match) {
+    const r = target(), human = !match.sides[match.shooter].bot;
+    r.draw(ctx, cam, { ...o, pull: pull ?? botPull, lava: match.lavaShown, loaded: match.shotsLeft > 0 ? match.loaded : null });
+    if (screen === 'siege' && human && !match.busy) drawSlots();
+    const f = r.flight, a = r.ammoAt();
+    if (human && f && a && !f.tapped && AMMO[f.ammo].tap) tapHint(cam.sx(a.x), cam.sy(a.y), AMMO[f.ammo].r * cam.k);
+  }
+  else if (screen === 'watch' && watching) {
+    const s = watching.log.shots[watching.i];
+    watching.ranges[watching.shown].draw(ctx, cam, { ...o, pull: watching.pull, lava: watching.lavaShown, loaded: s?.ammo ?? 'marble' });
+  }
   else { ctx.fillStyle = '#F4E9D8'; ctx.fillRect(0, 0, cssW, cssH); }
+}
+/** This turn's ammo, as round paper stickers at the bottom left. Tap one to load it. */
+function ammoSlots(): { ammo: Ammo; x: number; y: number; r: number }[] {
+  const m = match!, r = 25, x0 = Math.max(18, cam.sx(BOOK.x + BOOK.hw) + 16);   // right of the launcher's book
+  return m.hand.map((ammo, i) => ({ ammo, x: x0 + r + i * (2 * r + 12), y: cssH - 14 - r, r }));
+}
+function drawSlots(): void {
+  const m = match!, team = m.sides[m.shooter].team === 'blue' ? '#2F6FDE' : '#0F7B5F';
+  for (const sl of ammoSlots()) {
+    const on = sl.ammo === m.loaded && m.shotsLeft > 0 && target().state === 'aim';
+    ctx.save(); ctx.translate(sl.x, sl.y);
+    ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(0, 0, sl.r + 3, 0, Math.PI * 2); ctx.fill();   // the sticker's peeled white edge
+    ctx.fillStyle = '#FBF6EC'; ctx.beginPath(); ctx.arc(0, 0, sl.r, 0, Math.PI * 2); ctx.fill();
+    ctx.lineWidth = on ? 4 : 2; ctx.strokeStyle = on ? team : '#2E2A33'; ctx.beginPath(); ctx.arc(0, 0, sl.r + (on ? 1 : 0), 0, Math.PI * 2); ctx.stroke();
+    drawAmmo(ctx, sl.ammo, sl.ammo === 'balloon' ? sl.r * 0.55 : sl.ammo === 'jacks' ? sl.r * 0.62 : sl.r * 0.5, 0);
+    ctx.restore();
+  }
+}
+/** A pulsing ring around ammo that can still be tapped. */
+function tapHint(x: number, y: number, r: number): void {
+  const p = (clock % 600) / 600;
+  ctx.save(); ctx.globalAlpha = 1 - p; ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x, y, r + 6 + p * 16, 0, Math.PI * 2); ctx.stroke();
+  ctx.globalAlpha = 1; ctx.font = `18px ${HAND}`; ctx.fillStyle = '#2E2A33'; ctx.textAlign = 'center';
+  ctx.fillText('tap!', x, y - r - 12);
+  ctx.restore();
 }
 let last = performance.now();
 function frame(now: number): void {
@@ -402,7 +479,11 @@ if (import.meta.env.DEV || location.hostname === 'localhost') Object.assign(wind
   load: (i: number) => { builder?.load(BOT_FORTS[i]); buildBar(); },
   ready: () => { if (builder && !builder.blocker) buildDone?.(); },
   go: () => document.getElementById('p-go')?.click(),
-  fire: (x: number, y: number) => { if (screen === 'siege') shoot({ x, y }); },
+  fire: (x: number, y: number, ammo?: Ammo) => { if (screen === 'siege') { if (ammo && match!.hand.includes(ammo)) match!.loaded = ammo; shoot({ x, y }); } },
+  tap: () => target().ability(),
+  // balance sweeps (sim.ts): every ammo type at a bot fort over an angle × power grid
+  sweep: async (fort: number, ammo: Ammo) => { const sim = await import('./sim'); return sim.summarise(sim.sweep(BOT_FORTS[fort], ammo)); },
+  hand: () => match && { hand: match.hand, loaded: match.loaded, schedule: match.schedule },
   run: (sec: number) => { for (let i = 0; i < sec * 60; i++) tick(1 / 60); draw(); return `${screen} · ${barLeft.textContent}`; },
   state: () => ({ screen, volley: match?.volley, shooter: match?.shooter, shotsLeft: match?.shotsLeft, id: match?.rec.id, overlay: overlay.hidden ? '' : overlay.textContent?.trim().slice(0, 200) }),
   log: () => match?.rec.log ?? watching?.log,
@@ -411,7 +492,7 @@ if (import.meta.env.DEV || location.hostname === 'localhost') Object.assign(wind
 } });
 
 (async () => {
-  await initPhysics();
+  await initPhysics(wasmUrl);
   layout();
   new ResizeObserver(layout).observe(canvas);
   const id = Number(new URLSearchParams(location.search).get('watch'));

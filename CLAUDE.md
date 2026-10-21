@@ -9,6 +9,7 @@ A live 1v1 physics duel for phones, close to classic Angry Birds. Two siblings b
 
 ## How the work goes
 - One phase at a time. Each phase ends at a gate where Thomas decides, and decisions go into the decision log in `docs/00-plan.md`.
+- **Since 2026-10-21 (Thomas):** Claude builds the rest of Phase 6 (M3–M6) as an MVP at its own judgement, deploying after each step, without waiting for feedback. Thomas then playtests it with a friend, and the game log supplies the data.
 - Design theory is named where it decides something (MDA, Schell, Sirlin, Costikyan, Swink, …).
 
 ## Art pipeline
@@ -30,7 +31,8 @@ npx wrangler d1 execute fort-knocks --remote --command "SELECT id, created_at, s
 ```
 On the Vite dev server and on localhost, `window.__fk` drives the game without a visible tab:
 - `__fk.start('bot' | 'pass')`, `__fk.load(i)` (a bot fort into the builder), `__fk.ready()`, `__fk.go()` (pass screens)
-- `__fk.fire(pullX, pullY)` (pull in cells, max 2), `__fk.run(seconds)`, `__fk.state()`
+- `__fk.fire(pullX, pullY, ammo?)` (pull in cells, max 2), `__fk.tap()` (the ammo's ability), `__fk.hand()`, `__fk.run(seconds)`, `__fk.state()`
+- `__fk.sweep(fortIndex, ammo)`: fire one ammo type at a bot fort over an angle × power grid (balance)
 - `__fk.log()` (the current game log), `__fk.watch(log)` (replay a log), `__fk.watching()` (replay progress and drift)
 
 The Vite dev server doesn't save games, because it has no API. Built code does: deployed, or `npm run dev:worker` into the local D1.
@@ -41,6 +43,8 @@ The Vite dev server doesn't save games, because it has no API. Built code does: 
   - `src/fort.ts`: pieces, materials, the toy box, build rules, bot forts. `src/draw.ts`: the grey-box drawing.
   - `src/build.ts`: the build screen. `src/range.ts`: one fort's world and the launcher, stepped deterministically.
   - `src/main.ts`: the match flow, input, replays (`?watch=<id>`). `src/record.ts`: the game log. `src/games.ts`: the past-games page.
+  - `src/ammo.ts`: the four ammo types, the schedule, their drawings. `src/fx.ts`: crayon effects. `src/sim.ts`: headless balance sweeps (`__fk.sweep(fort, ammo)` in dev).
+  - `src/art.ts`: the illustrated room, rug and plushie sprites, placed in world coordinates. The images are in `client/public/art/`, made by `dev/art/make_art.py` from `docs/concept/game-art/` and `docs/concept/sprites/`.
 - `worker.ts`: the Cloudflare Worker. `/api/games` on D1, everything else from `dist/`. `migrations/`: the D1 schema.
 - `docs/`: design documents and concept art (`docs/concept/`).
 - `dev/style-frame/`: the Phase 5.3 style frame. A static page; serve the folder over http, because the sprites don't load from file://.

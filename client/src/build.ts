@@ -6,8 +6,10 @@ import {
   BUDGET, CAP, FUNNEL_SLOPE, MIN_PLUSH_Y, PLUSHIES, RUG_W, TRAY, TRAY_ORDER, decorate, dropY, inFunnel, overlaps, priceOf, trayKindOf, turned,
   type Draw, type Piece, type Plushie, type TrayKind,
 } from './fort';
-import { P, drawPiece, drawPlush, rrPath } from './draw';
+import { FONT, HAND, P, drawPiece, drawPlush, rrPath } from './draw';
 import { Cam, Range } from './range';
+import { drawAmmo, type Ammo } from './ammo';
+import { drawPlushSprite, drawRoom, drawRug } from './art';
 
 // The tray sits LIFT px above the screen edge: drags starting at the very bottom trigger the phone's swipe-home gesture (playtest 1).
 const TRAY_H = 64, LIFT = 22, SNAP = 0.5, E = 1e-6;
@@ -25,6 +27,8 @@ export class Builder {
   /** A piece tapped out of the box, waiting on the rug to be dragged into place. */
   held: Piece | null = null;
   testing: Range | null = null;
+  /** The ammo the other player will fire, per volley: builders read it (04-systems §5, H14). */
+  schedule: Ammo[][] | null = null;
   /** How often Test was pressed (for the game log). */
   tests = 0;
   testClock = 0;
@@ -174,11 +178,13 @@ export class Builder {
       return;
     }
     this.backdrop(c);
+    this.incoming(c);
     // the minimum-height mark (masking tape on the wall in the final art)
-    c.strokeStyle = 'rgba(46,42,51,0.35)'; c.setLineDash([6, 6]); c.lineWidth = 2;
+    c.strokeStyle = 'rgba(46,42,51,0.55)'; c.setLineDash([6, 6]); c.lineWidth = 2;
     c.beginPath(); c.moveTo(cam.sx(-0.5), cam.sy(MIN_PLUSH_Y)); c.lineTo(cam.sx(RUG_W + 0.5), cam.sy(MIN_PLUSH_Y)); c.stroke(); c.setLineDash([]);
-    c.fillStyle = 'rgba(46,42,51,0.55)'; c.font = '600 12px system-ui, sans-serif'; c.textAlign = 'left'; c.textBaseline = 'bottom';
-    c.fillText('plushies stand above this line', cam.sx(-0.5) + 2, cam.sy(MIN_PLUSH_Y) - 3);
+    c.font = `16px ${HAND}`; c.textAlign = 'left'; c.textBaseline = 'bottom'; c.lineJoin = 'round';
+    c.strokeStyle = 'rgba(251,246,236,0.9)'; c.lineWidth = 4; c.strokeText('plushies stand above this line', cam.sx(-0.5) + 2, cam.sy(MIN_PLUSH_Y) - 3);
+    c.fillStyle = P.ink; c.fillText('plushies stand above this line', cam.sx(-0.5) + 2, cam.sy(MIN_PLUSH_Y) - 3);
     const probs = this.problems();
     for (const p of this.pieces) this.piece(c, p, 1);
     for (const p of this.pieces) if (p.type === 'plush') this.funnel(c, p, probs.get(p)?.endsWith('sky') ?? false);
@@ -204,18 +210,28 @@ export class Builder {
   }
   private backdrop(c: CanvasRenderingContext2D): void {
     const { cam } = this;
-    c.fillStyle = P.wall; c.fillRect(0, 0, this.w, this.h);
-    c.fillStyle = P.floor; c.fillRect(0, cam.sy(0) + 0.3 * cam.k, this.w, this.h);
-    c.fillStyle = P.lava; c.fillRect(0, cam.sy(-0.3), this.w, this.h);
-    const rx = cam.sx(-0.3), rw = (RUG_W + 0.6) * cam.k;
-    c.fillStyle = P.rug; c.fillRect(rx, cam.sy(0), rw, 0.3 * cam.k);
-    c.fillStyle = P.rug2; for (let i = rx + 4; i < rx + rw - 4; i += cam.k * 0.5) c.fillRect(i, cam.sy(0), cam.k * 0.22, 0.3 * cam.k);
-    c.strokeStyle = P.ink; c.lineWidth = 2; c.strokeRect(rx, cam.sy(0), rw, 0.3 * cam.k);
+    drawRoom(c, cam, this.w, this.h);
+    c.fillStyle = 'rgba(251,246,236,0.55)'; c.fillRect(0, 0, this.w, this.h);   // the room steps back while you build
+    drawRug(c, cam, this.team);
+  }
+  /** The ammo schedule, as a note pinned at the top left: what will be fired at this fort, volley by volley. */
+  private incoming(c: CanvasRenderingContext2D): void {
+    const sch = this.schedule; if (!sch) return;
+    const x = 8, y = this.top + 6, r = 10, w = 76 + sch.length * 62, h = 30;
+    const box = rrPath(x, y, w, h, 8);
+    c.fillStyle = 'rgba(251,246,236,0.92)'; c.fill(box); c.lineWidth = 1.5; c.strokeStyle = P.ink; c.stroke(box);
+    c.fillStyle = P.ink; c.font = `16px ${HAND}`; c.textAlign = 'left'; c.textBaseline = 'middle';
+    c.fillText('Incoming', x + 8, y + h / 2);
+    sch.forEach((pair, v) => {
+      const vx = x + 72 + v * 62;
+      c.fillStyle = 'rgba(46,42,51,0.6)'; c.font = `700 11px ${FONT}`; c.fillText(String(v + 1), vx, y + h / 2);
+      pair.forEach((a, i) => { c.save(); c.translate(vx + 18 + i * 22, y + h / 2); drawAmmo(c, a, a === 'balloon' ? r * 0.9 : r, 0); c.restore(); });
+    });
   }
   private piece(c: CanvasRenderingContext2D, p: Piece, scale: number): void {
     const { cam } = this, k = cam.k * scale;
     c.save(); c.translate(cam.sx(p.x + p.w / 2), cam.sy(p.y + p.h / 2));
-    if (p.type === 'plush') drawPlush(c, p.plush!, p.w * k, p.h * k, false, this.team === 'blue' ? P.blue : P.green);
+    if (p.type === 'plush') { if (!drawPlushSprite(c, p.plush!, this.team, k, false)) drawPlush(c, p.plush!, p.w * k, p.h * k, false, this.team === 'blue' ? P.blue : P.green); }
     else drawPiece(c, p, k);
     c.restore();
   }
@@ -233,7 +249,7 @@ export class Builder {
   private label(c: CanvasRenderingContext2D, p: Piece, text: string, col: string = P.toyRed): void {
     const { cam } = this, cx = cam.sx(p.x + p.w / 2);
     let y = Math.max(16, cam.sy(p.y + p.h) - 10);
-    c.font = '700 12px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = `700 12px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
     const w = c.measureText(text).width + 14, x = Math.max(4 + w / 2, Math.min(this.w - 4 - w / 2, cx));
     while (this.taken.some(t => Math.abs(t.y - y) < 22 && Math.abs(t.x - x) < (t.w + w) / 2 + 4)) y -= 22;
     this.taken.push({ x, y, w });
@@ -262,20 +278,20 @@ export class Builder {
       const piece: Piece = s.kind === 'plush' ? { type: 'plush', x: 0, y: 0, w: 1, h: 1, plush: s.plush } : decorate({ ...TRAY[s.kind].make(), x: 0, y: 0 }, TRAY_ORDER.indexOf(s.kind));
       const k = Math.min((s.w - 18) / piece.w, (s.h - 24) / Math.max(piece.h, 0.5), 20);
       c.save(); c.globalAlpha = affordable ? 1 : 0.45; c.translate(s.x + s.w / 2, s.y + (s.h - 16) / 2 + 2);
-      if (piece.type === 'plush') drawPlush(c, piece.plush!, k, k, false, this.team === 'blue' ? P.blue : P.green);
+      if (piece.type === 'plush') { c.translate(0, -k * 0.2); if (!drawPlushSprite(c, piece.plush!, this.team, k * 0.85, false)) drawPlush(c, piece.plush!, k, k, false, this.team === 'blue' ? P.blue : P.green); }
       else drawPiece(c, piece, k);
       c.restore();
-      c.fillStyle = P.ink; c.font = '700 12px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
+      c.fillStyle = P.ink; c.font = `700 12px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
       c.fillText(s.kind === 'plush' ? (affordable ? NAME[s.plush!] : 'on the rug') : `${this.left[s.kind]} left`, s.x + s.w / 2, s.y + s.h - 5);
       if (s.kind !== 'plush') {   // the price, as a coin in the corner
         c.fillStyle = P.toyYellow; c.beginPath(); c.arc(s.x + s.w - 9, s.y + 9, 8, 0, Math.PI * 2); c.fill(); c.lineWidth = 1.5; c.strokeStyle = P.ink; c.stroke();
-        c.fillStyle = P.ink; c.font = '800 11px system-ui, sans-serif'; c.textBaseline = 'middle'; c.fillText(String(TRAY[s.kind].price), s.x + s.w - 9, s.y + 9.5);
+        c.fillStyle = P.ink; c.font = `800 11px ${FONT}`; c.textBaseline = 'middle'; c.fillText(String(TRAY[s.kind].price), s.x + s.w - 9, s.y + 9.5);
       }
     }
     if (carrying) {   // while carrying a piece, the box says what dropping it there does
       const over = this.lastPy > y;
       c.save(); c.globalAlpha = over ? 0.9 : 0.7; c.fillStyle = over ? P.green : '#2E2A33'; c.fillRect(0, y, this.w, TRAY_H); c.restore();
-      c.fillStyle = '#FFFFFF'; c.font = '800 15px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillStyle = '#FFFFFF'; c.font = `800 15px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle';
       c.fillText(d!.from === 'field' ? 'Drop here to put it back in the box' : 'Drop here to put it back', this.w / 2, y + TRAY_H / 2);
     }
   }

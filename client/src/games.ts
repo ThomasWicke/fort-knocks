@@ -1,8 +1,13 @@
 // The past-games page (/games): every logged match, newest first, with both forts as built, every shot and a link
 // to watch it again. On top, how often each toy-box piece gets used, for "which pieces don't help?" (playtest 2).
 // No physics here: this page only draws blueprints, so it stays small.
+import '@fontsource/baloo-2/latin-500.css';
+import '@fontsource/baloo-2/latin-700.css';
+import '@fontsource/lilita-one/latin-400.css';
 import { RUG_W, TRAY, TRAY_ORDER, priceOf, trayKindOf, type Piece, type Plushie, type TrayKind } from './fort';
 import { P, drawPiece, drawPlush } from './draw';
+import { artReady, drawPlushSprite, drawRug } from './art';
+import { AMMO } from './ammo';
 import type { GameLog, ShotLog, Team } from './record';
 
 interface Row { id: number; created_at: string; updated_at: string; log: GameLog }
@@ -56,7 +61,7 @@ function card(row: Row): HTMLElement {
   if (log.shots.length) {
     const d = document.createElement('details');
     d.innerHTML = `<summary>${log.shots.length} shot${log.shots.length === 1 ? '' : 's'}</summary><div class="tablewrap"><table>
-      <tr><th>Volley</th><th>Who</th><th>Angle</th><th>Power</th><th>Result</th></tr>
+      <tr><th>Volley</th><th>Who</th><th>Ammo</th><th>Angle</th><th>Power</th><th>Result</th></tr>
       ${log.shots.map(s => shotRow(log, s)).join('')}</table></div>`;
     el.append(d);
   }
@@ -65,9 +70,11 @@ function card(row: Row): HTMLElement {
 function shotRow(log: GameLog, s: ShotLog): string {
   const who = log.sides[s.by === 'blue' ? 0 : 1].name;
   const deg = Math.round((Math.atan2(s.pull.y, s.pull.x) * 180) / Math.PI), power = Math.round((Math.hypot(s.pull.x, s.pull.y) / MAX_PULL) * 100);
-  const res = [s.out.length ? `${s.out.map(p => NAME[p]).join(', ')} out` : '', s.lost ? `${s.lost} piece${s.lost === 1 ? '' : 's'} off` : ''].filter(Boolean).join(' · ');
+  const crushed = s.crushed ?? [];
+  const res = [s.out.length ? s.out.map(p => `${NAME[p]} ${crushed.includes(p) ? 'crushed' : 'out'}`).join(', ') : '', s.lost ? `${s.lost} piece${s.lost === 1 ? '' : 's'} off` : ''].filter(Boolean).join(' · ');
+  const ammo = s.ammo ? `${AMMO[s.ammo].name}${s.tap !== undefined ? ' (tapped)' : ''}` : 'Marble';
   const miss = !s.impact ? 'missed' : s.impact[0] < -0.5 ? 'short' : 'no effect';
-  return `<tr><td>${s.volley}</td><td>${esc(who)}, ${s.n}</td><td>${deg}°</td><td>${power}%</td><td class="${res ? 'out' : ''}">${res || miss}</td></tr>`;
+  return `<tr><td>${s.volley}</td><td>${esc(who)}, ${s.n}</td><td>${ammo}</td><td>${deg}°</td><td>${power}%</td><td class="${res ? 'out' : ''}">${res || miss}</td></tr>`;
 }
 
 /** The fort as built (before physics), on its rug. */
@@ -75,12 +82,14 @@ function drawFort(cv: HTMLCanvasElement, fort: Piece[], team: Team): void {
   const dpr = Math.min(devicePixelRatio || 1, 2), w = cv.clientWidth, h = cv.clientHeight;
   cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
   const c = cv.getContext('2d')!; c.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const k = Math.min(w / (RUG_W + 0.8), h / 7.6), ox = (w - RUG_W * k) / 2, oy = h - 0.35 * k;
-  c.fillStyle = P.rug; c.fillRect(ox - 0.3 * k, oy, (RUG_W + 0.6) * k, 0.3 * k);
-  c.strokeStyle = P.ink; c.lineWidth = 1.5; c.strokeRect(ox - 0.3 * k, oy, (RUG_W + 0.6) * k, 0.3 * k);
+  const k = Math.min(w / (RUG_W + 1.6), h / 8.4), ox = (w - RUG_W * k) / 2, oy = h - 0.7 * k;
+  if (!drawRug(c, { k, sx: x => ox + x * k, sy: y => oy - y * k }, team)) {
+    c.fillStyle = P.rug; c.fillRect(ox - 0.3 * k, oy, (RUG_W + 0.6) * k, 0.3 * k);
+    c.strokeStyle = P.ink; c.lineWidth = 1.5; c.strokeRect(ox - 0.3 * k, oy, (RUG_W + 0.6) * k, 0.3 * k);
+  }
   for (const p of fort) {
     c.save(); c.translate(ox + (p.x + p.w / 2) * k, oy - (p.y + p.h / 2) * k);
-    if (p.type === 'plush') drawPlush(c, p.plush!, p.w * k, p.h * k, false, team === 'blue' ? P.blue : P.green);
+    if (p.type === 'plush') { if (!drawPlushSprite(c, p.plush!, team, k, false)) drawPlush(c, p.plush!, p.w * k, p.h * k, false, team === 'blue' ? P.blue : P.green); }
     else drawPiece(c, p, k);
     c.restore();
   }
@@ -109,4 +118,4 @@ function device(ua: string): string {
   return /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'other device';
 }
 
-void load();
+void artReady().then(() => load());

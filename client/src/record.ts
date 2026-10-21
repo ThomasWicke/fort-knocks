@@ -2,6 +2,7 @@
 // game ("game 12, Green's second shot"). A log holds everything a replay needs: both forts as built and every
 // shot as (step, pull) on its target's range (range.ts explains why that is enough).
 import type { Draw, Piece, Plushie } from './fort';
+import type { Ammo } from './ammo';
 import type { ShotRec } from './range';
 
 export type Team = 'blue' | 'green';
@@ -26,6 +27,8 @@ export interface GameLog {
   device: string;
   status: 'building' | 'siege' | 'done' | 'quit';
   draw: Draw;
+  /** The ammo schedule, two per volley (absent in logs from before M3: marbles only). */
+  schedule?: Ammo[][];
   sides: [SideLog, SideLog];
   shots: ShotLog[];
   /** Plushies standing after each volley, once the lava has risen. */
