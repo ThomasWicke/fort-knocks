@@ -1,11 +1,12 @@
 // The four ammo types (docs/04-systems.md §5). Each is a different verb (orthogonal differentiation, Harvey Smith),
 // each has one tap-in-flight ability except the marble, and each has one material it's best against:
-// marble → dominoes and direct plushie hits, jacks → card tents, spinning top → block towers, water balloon → books.
+// marble → dominoes and direct plushie hits, jacks → card tents, spinning top → block towers, popper → chaos from inside.
+// The water balloon was replaced by the popper in playtest 3 ("not fun"); it stays here so old games still replay.
 // All four leave the launcher at the same speed, so the aim preview means the same thing for every one.
 import { P, drawMarble } from './draw';
 
-export type Ammo = 'marble' | 'jacks' | 'top' | 'balloon';
-export const AMMO_ORDER: Ammo[] = ['marble', 'jacks', 'top', 'balloon'];
+export type Ammo = 'marble' | 'jacks' | 'top' | 'popper' | 'balloon';
+export const AMMO_ORDER: Ammo[] = ['marble', 'jacks', 'top', 'popper'];
 
 export interface AmmoSpec { name: string; tap: string | null; r: number; density: number; friction: number; restitution: number }
 export const AMMO: Record<Ammo, AmmoSpec> = {
@@ -15,13 +16,20 @@ export const AMMO: Record<Ammo, AmmoSpec> = {
   jacks: { name: 'Jacks', tap: 'scatter', r: 0.3, density: 3, friction: 0.5, restitution: 0.1 },
   // a tap stops it dead and it drills straight down, shoving everything aside
   top: { name: 'Spinning top', tap: 'drill down', r: 0.33, density: 4, friction: 0.4, restitution: 0.1 },
-  // big and soft: it bursts on the first touch (or on a tap), a push wave that soaks what it reaches
+  // a rubber half-ball turned inside out: it lands, sits a moment, then pops, shoving what's around it and jumping off
+  // in a random direction. A tap pops it early (Thomas, playtest 3)
+  popper: { name: 'Popper', tap: 'pop', r: 0.3, density: 2.5, friction: 0.8, restitution: 0.35 },
+  // (retired) big and soft: it bursts on the first touch (or on a tap), a push wave that soaks what it reaches
   balloon: { name: 'Water balloon', tap: 'burst', r: 0.42, density: 1.2, friction: 0.9, restitution: 0.05 },
 };
 
 export const JACK = { arm: 0.22, thick: 0.05, density: 4, spread: [-0.24, -0.08, 0.08, 0.24], speed: [1.0, 1.03, 0.98, 1.02] };
 export const DRILL = { speed: 6, maxT: 1.0, spin: 40 };
 export const SPLASH = { radius: 2.6, impulse: 3.5, wetFriction: 0.12 };
+/** The popper: it pops 0.5–1 s after it first touches something (or on a tap), shoving pieces within radius and
+ *  (and a little upward, so things topple) and jumping off at speed, up to 70° either side of straight up. The
+ *  direction is random but seeded by the shot. */
+export const POP = { radius: 2.4, impulse: 15, lift: 0.6, speed: 12, delay: [30, 60], spread: 1.22 };
 /** Crush rule: a plushie hit directly with at least this momentum (mass × approach speed) is out.
  *  A marble at about three quarters of full power, hitting directly (04-systems §13 said 60%; tuned with sim.ts). */
 export const CRUSH = { momentum: 14 };   // 12 at first; raised with the heavier plushies (sim.ts match runs)
@@ -42,6 +50,7 @@ export function drawAmmo(c: CanvasRenderingContext2D, kind: Ammo, r: number, pha
   if (kind === 'marble') return drawMarble(c, r);
   if (kind === 'jacks') { for (const [dx, dy, a] of [[-0.35, 0.2, 0.3], [0.35, 0.15, 1.2], [0, -0.3, 2.1]]) { c.save(); c.translate(dx * r, dy * r); c.rotate(a); drawJack(c, r * 0.75); c.restore(); } return; }
   if (kind === 'top') return drawTop(c, r, phase);
+  if (kind === 'popper') return drawPopper(c, r, false, phase);
   return drawBalloon(c, r, phase);
 }
 
@@ -74,6 +83,20 @@ export function drawTop(c: CanvasRenderingContext2D, r: number, phase = 0): void
   c.fillStyle = P.wood; c.fill(h); c.stroke(h);
 }
 
+/** The popper: a bright rubber half-ball. armed: it has landed inside out and trembles before it pops. */
+export function drawPopper(c: CanvasRenderingContext2D, r: number, armed: boolean, phase = 0): void {
+  c.save();
+  if (armed) { c.translate(Math.sin(phase * 60) * r * 0.08, 0); c.scale(1.08, 0.86); }
+  const dome = new Path2D();
+  dome.moveTo(-r * 1.1, r * 0.35); dome.quadraticCurveTo(-r * 1.05, -r * 1.05, 0, -r * 1.05); dome.quadraticCurveTo(r * 1.05, -r * 1.05, r * 1.1, r * 0.35); dome.closePath();
+  c.fillStyle = '#FF7A1A'; c.fill(dome);
+  c.save(); c.clip(dome); c.fillStyle = 'rgba(0,0,0,0.14)'; c.fillRect(r * 0.3, -r * 1.2, r, r * 2); c.restore();
+  c.fillStyle = 'rgba(255,255,255,0.6)'; c.beginPath(); c.ellipse(-r * 0.4, -r * 0.55, r * 0.22, r * 0.12, -0.5, 0, Math.PI * 2); c.fill();
+  c.lineWidth = 2; c.strokeStyle = P.ink; c.stroke(dome);
+  const lip = new Path2D(); lip.rect(-r * 1.15, r * 0.3, r * 2.3, r * 0.28);   // the rim
+  c.fillStyle = '#E05A00'; c.fill(lip); c.stroke(lip);
+  c.restore();
+}
 /** The water balloon: a blue drop with a knot, squashing as it wobbles. */
 export function drawBalloon(c: CanvasRenderingContext2D, r: number, phase = 0): void {
   const sx = 1 + Math.sin(phase * 9) * 0.07, sy = 1 - Math.sin(phase * 9) * 0.07;

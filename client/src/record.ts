@@ -38,7 +38,7 @@ export interface GameLog {
   repairs?: ({ by: Team; step: number } & Repair)[];
   /** Plushies standing after each volley, once the lava has risen. */
   volleys: { volley: number; standing: Record<Team, number> }[];
-  /** destroyed: the share of each team's own fort that was knocked off (by price, the tiebreak). */
+  /** destroyed: the share of each team's own fort that was knocked off (weighted by each piece's value, the tiebreak). */
   result?: { standing: Record<Team, number>; destroyed: Record<Team, number>; winner: Team | 'draw'; ms: number };
   winner: Team | 'draw' | null;
   summary: string;

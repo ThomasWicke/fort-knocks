@@ -10,13 +10,13 @@ import '@fontsource/lilita-one/latin-400.css';
 import '@fontsource/gochi-hand/latin-400.css';
 import { initPhysics } from './physics';
 import wasmUrl from '../../node_modules/box2d3-wasm/build/dist/es/compat/Box2D.compat.wasm?url';
-import { BOT_FORTS, makeDraw, priceOf, type Draw, type Piece } from './fort';
+import { BOT_FORTS, makeDraw, trayKindOf, type Draw, type Piece } from './fort';
 import { Builder } from './build';
 import { BOOK, Cam, MAX_PULL, Puppet, Range, TAPE, drawScene, patchPiece, type Pull, type Repair, type Snap } from './range';
-import { HAND } from './draw';
+import { HAND, preloadPieces } from './draw';
 import { AMMO, drawAmmo, makeSchedule, type Ammo } from './ammo';
-import { MODES, RULES_ORDER, roundAmmo, savedRules, saveRules, type Rules } from './modes';
-import { ALLOWANCE, REPAIR_SECS, RepairScreen, seamAt, type RepairView } from './repair';
+import { LAVA_STEP, MODES, RULES_ORDER, boxFor, lavaFor, roundAmmo, savedRules, saveRules, type Rules } from './modes';
+import { REPAIR_PIECES, REPAIR_SECS, RepairScreen, seamAt, type RepairView } from './repair';
 import { botAim as aimBot, botFort, botTap } from './bot';
 import { Recorder, deviceInfo, type GameLog, type ShotLog, type SideLog, type Team } from './record';
 import { RoomConn, newCode, playerId } from './party';
@@ -35,8 +35,8 @@ const overlay = document.getElementById('overlay')!;
 
 interface Side {
   team: Team; name: string; bot: boolean; fort: Piece[]; range: Range | null;
-  /** What's left for repairs: the draw's unused pieces and the reserve (unspent budget, plus 3 per repair). */
-  left: Draw; reserve: number;
+  /** What's left in the box for repairs: the draw's unused pieces. */
+  left: Draw;
 }
 interface Match {
   mode: 'pass' | 'bot' | 'online'; draw: Draw; sides: [Side, Side];
@@ -87,9 +87,9 @@ function menu(): void {
 function newMatch(mode: 'pass' | 'bot', rules: Rules, round = 1, wins: Record<Team, number> = { blue: 0, green: 0 }): void {
   quitMatch(); leaveRoom();
   timers.length = 0;
-  const draw = makeDraw(rng), schedule = scheduleFor(rules, round);
-  const blue: Side = { team: 'blue', name: mode === 'bot' ? 'You' : 'Blue', bot: false, fort: [], range: null, left: { ...draw }, reserve: 0 };
-  const green: Side = { team: 'green', name: mode === 'bot' ? 'Bot' : 'Green', bot: mode === 'bot', fort: [], range: null, left: { ...draw }, reserve: 0 };
+  const draw = makeDraw(rng, boxFor(rules, round)), schedule = scheduleFor(rules, round);
+  const blue: Side = { team: 'blue', name: mode === 'bot' ? 'You' : 'Blue', bot: false, fort: [], range: null, left: { ...draw } };
+  const green: Side = { team: 'green', name: mode === 'bot' ? 'Bot' : 'Green', bot: mode === 'bot', fort: [], range: null, left: { ...draw } };
   const log: GameLog = {
     v: 1, app: __APP__, mode, rules, round, started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw, schedule,
     sides: [{ team: 'blue', name: blue.name, bot: false, fort: null }, { team: 'green', name: green.name, bot: green.bot, fort: null }],
@@ -115,24 +115,24 @@ function quitMatch(): void {
 function build(i: 0 | 1): void {
   const m = match!, side = m.sides[i];
   screen = 'build'; hide();
-  const sp = spec(m), r = Math.min(m.round, sp.budgets.length) - 1;
-  builder = new Builder(side.team, m.draw, clock, sp.budgets[r]);
+  const sp = spec(m);
+  builder = new Builder(side.team, m.draw, clock);
   builder.schedule = m.rules === 'race' ? null : m.schedule;
   buildSecs = sp.buildSecs[Math.min(m.round, sp.buildSecs.length) - 1];
   layout();
   buildDone = () => {
     const b = builder!, sl = m.rec.log.sides[i];
-    side.fort = b.pieces.map(p => ({ ...p })); side.left = { ...b.left }; side.reserve = b.budgetLeft; builder = null; buildDone = null;
+    side.fort = b.pieces.map(p => ({ ...p })); side.left = { ...b.left }; builder = null; buildDone = null;
     Object.assign(sl, { fort: side.fort, buildMs: Math.round(clock - b.started), tests: b.tests });
     if (m.mode === 'online') return sendFort(side.fort, Math.round(clock - b.started), b.tests);
     if (i === 0 && m.mode === 'pass') {
       m.rec.log.summary = 'Green building'; save();
-      passThen('Green builds', 'Blue, look away while Green builds. Same toy box, same budget.', () => build(1));
+      passThen('Green builds', 'Blue, look away while Green builds. Same toy box.', () => build(1));
     } else if (i === 0) {
-      // the bot builds from the same draw and budget; the hand-made forts are only a fallback
-      const budget = b.budget, built = botFort(m.draw, budget, rng), k = Math.floor(rng() * BOT_FORTS.length);
+      // the bot builds from the same toy box; the hand-made forts are only a fallback
+      const built = botFort(m.draw, rng), k = Math.floor(rng() * BOT_FORTS.length);
       m.sides[1].fort = built ?? BOT_FORTS[k].map(p => ({ ...p }));
-      m.sides[1].reserve = budget - m.sides[1].fort.reduce((n, p) => n + priceOf(p), 0);
+      for (const p of m.sides[1].fort) { const tk = trayKindOf(p); if (tk) m.sides[1].left[tk] = Math.max(0, m.sides[1].left[tk] - 1); }
       Object.assign(m.rec.log.sides[1], { fort: m.sides[1].fort, botFort: built ? undefined : k });
       startSiege();
     } else startSiege();
@@ -148,7 +148,7 @@ function build(i: 0 | 1): void {
         <li>Put anything anywhere. If a piece breaks a rule it turns red and says why; fix those before you're ready.</li>
         <li><b>Test</b> switches the physics on. Whatever falls, falls.</li>
         ${m.rules === 'siege' ? '<li>The lava rises after volleys 1 and 2, so plushies standing low drown. Between volleys you can patch and tape your fort.</li>'
-          : m.rules === 'race' ? '<li>The lava rises every 30 seconds, so plushies standing low drown.</li>' : '<li>Each round is a new fort with a bigger budget. Best of three.</li>'}
+          : m.rules === 'race' ? '<li>The lava rises every 30 seconds, so plushies standing low drown.</li>' : '<li>Each round is a new fort from a new, bigger toy box. Best of three.</li>'}
       </ul>
       <div class="row"><button id="h-ok">Got it</button></div>`);
     on('h-ok', hide);
@@ -158,7 +158,7 @@ function buildBar(): void {
   const b = builder; if (!b || !match) return;
   const side = match.sides.find(s => s.team === b.team)!, secs = Math.floor((clock - b.started) / 1000);
   const rest = buildSecs - secs, clockText = rest >= 0 ? `${Math.floor(rest / 60)}:${String(rest % 60).padStart(2, '0')} left` : 'time\'s up';
-  const left = `${tag()}${side.name} ${side.name === 'You' ? 'build' : 'builds'} · budget ${b.budgetLeft} of ${b.budget} · ${clockText}`;
+  const left = `${tag()}${side.name} ${side.name === 'You' ? 'build' : 'builds'} · ${b.piecesLeft} pieces left in the box · ${clockText}`;
   const blocker = b.blocker, testable = b.testable;
   const key = `${left}|${!!b.testing}|${blocker}|${testable}`;
   if (barRight.dataset.key === key) return;   // rebuild the bar only when something changed
@@ -190,7 +190,7 @@ function shoot(p: Pull, how?: Pick<ShotLog, 'raw' | 'aimMs'>): void {
 function shootAt(range: Range, by: Team, p: Pull, ammo: Ammo, how?: Pick<ShotLog, 'raw' | 'aimMs'>): ShotLog | null {
   const m = match!;
   if (!range.fire(p, ammo)) return null;
-  const volley = m.race ? m.lava + 1 : m.volley, n = m.rec.log.shots.filter(x => x.volley === volley && x.by === by).length + 1;
+  const volley = m.race ? Math.floor((clock - m.race.start) / 30000) + 1 : m.volley, n = m.rec.log.shots.filter(x => x.volley === volley && x.by === by).length + 1;
   const shot: ShotLog = Object.assign(range.shots[range.shots.length - 1], { volley, by, n }, how);
   m.rec.log.shots.push(shot);
   if (m.mode === 'online') online?.conn.send({ t: 'shot', shot, ammo: shot.ammo });
@@ -223,7 +223,7 @@ function endTurn(): void {
   // end of the volley: in the Siege the lava rises one cell between volleys (to 1, then 2), then the score is checked
   m.busy = true;
   const sp = spec(m), rises = sp.lava === 'volley' && m.volley < sp.volleys;
-  if (rises) { m.lava += 1; status('The lava rises'); }
+  if (rises) { m.lava += LAVA_STEP; status('The lava rises'); }
   later(rises ? 1800 : 600, () => {
     m.rec.log.volleys.push({ volley: m.volley, standing: standing() });
     const wiped = m.sides.some(s => s.range!.standing() === 0);
@@ -254,14 +254,12 @@ function localRepairs(next: () => void): void {
 /** The repair screen for one side's fort. view: the fort as it stands (the live range, or online the streamed picture). */
 function openRepair(i: 0 | 1, done: (r: Repair) => void, view?: () => RepairView | null): void {
   const m = match!, side = m.sides[i];
-  side.reserve += ALLOWANCE;
   screen = 'repair'; hide();
-  repairing = new RepairScreen(side.team, side.left, side.reserve, view ?? (() => ({ snap: side.range!.snap(m.lavaShown), pieces: side.range!.entries.map(e => e.piece) })));
+  repairing = new RepairScreen(side.team, side.left, view ?? (() => ({ snap: side.range!.snap(m.lavaShown), pieces: side.range!.entries.map(e => e.piece) })));
   repairStart = clock;
   layout();
   repairDone = () => {
     const rs = repairing!, r = rs.result();
-    side.reserve -= rs.spent;
     for (const p of r.patches) side.left[p.kind]--;
     repairing = null; repairDone = null; barRight.dataset.key = '';
     done(r);
@@ -273,20 +271,19 @@ function repairBar(): void {
   const left = Math.max(0, Math.ceil(REPAIR_SECS - (clock - repairStart) / 1000));
   if (left === 0) { repairDone?.(); return; }
   const side = m.sides.find(s => s.team === rs.team)!;
-  const text = `${tag()}${side.name === 'You' ? 'Repair your fort' : `${side.name} repairs`} · ${left} s · reserve ${rs.money} · tape ${rs.tapes.length}/${TAPE.perRepair}`;
+  const text = `${tag()}${side.name === 'You' ? 'Repair your fort' : `${side.name} repairs`} · ${left} s · pieces ${rs.patches.length}/${REPAIR_PIECES} · tape ${rs.tapes.length}/${TAPE.perRepair}`;
   const key = `${text}|repair`;
   if (barRight.dataset.key === key) return;
   barRight.dataset.key = key;
   bar(text, [['Done', () => repairDone?.()]]);
 }
-/** The bot's repair: tape each standing plushie to what it stands on, while the reserve lasts. */
+/** The bot's repair: tape each standing plushie to what it stands on. */
 function botRepair(side: Side): Repair {
   const r = side.range!, view = { snap: r.snap(0), pieces: r.entries.map(e => e.piece) }, tapes: Repair['tapes'] = [];
-  side.reserve += ALLOWANCE;
   for (const e of r.entries) {
-    if (e.piece.type !== 'plush' || e.out || tapes.length >= TAPE.perRepair || side.reserve < TAPE.cost) continue;
-    const t = r.world.transform(e.id), pair = seamAt(view, t.x, t.y - 0.5);
-    if (pair && pair.includes(r.entries.indexOf(e))) { tapes.push([pair[0], pair[1], t.x, t.y - 0.5]); side.reserve -= TAPE.cost; }
+    if (e.piece.type !== 'plush' || e.out || tapes.length >= TAPE.perRepair) continue;
+    const t = r.world.transform(e.id), feet = t.y - e.piece.h / 2, pair = seamAt(view, t.x, feet);
+    if (pair && pair.includes(r.entries.indexOf(e))) tapes.push([pair[0], pair[1], t.x, feet]);
   }
   return { patches: [], tapes };
 }
@@ -318,7 +315,7 @@ function startRace(): void {
 function raceTick(): void {
   const m = match!, r = m.race!, sp = spec(m);
   if (r.over) return;
-  const t = (clock - r.start) / 1000, lava = Math.min(3, Math.floor(t / 30));
+  const t = (clock - r.start) / 1000, lava = Math.min(1.5, Math.floor(t / 30) * LAVA_STEP);
   if (lava !== m.lava) m.lava = lava;
   if (!r.footsteps && t >= sp.clock! - 30) r.footsteps = true;
   if (m.mode === 'bot') {   // the bot fires on its own reload at your fort, which keeps ticking in the background
@@ -466,7 +463,7 @@ function nextShot(): void {
   const w = watching!; w.i++;
   const s = w.log.shots[w.i];
   if (!s) return endWatch();
-  w.shown = other(s.by); w.lava = s.volley - 1; w.phase = 'lead'; w.wait = 0;
+  w.shown = other(s.by); w.lava = lavaFor(w.log.rules, s.volley); w.phase = 'lead'; w.wait = 0;
   const r = w.ranges[w.shown], pend = w.pending[w.shown];
   while (pend.length && pend[0].step <= s.step) { const rp = pend.shift()!; r.stepTo(Math.max(r.steps, rp.step), w.lava); r.repair(rp); }   // repairs land where they did
   r.stepTo(Math.max(r.steps, s.step - LEAD), w.lava);
@@ -475,9 +472,11 @@ function nextShot(): void {
 function watchTick(dt: number): void {
   const w = watching!, r = w.ranges[w.shown], s = w.log.shots[w.i], pend = w.pending[w.shown];
   w.lavaShown += Math.sign(w.lava - w.lavaShown) * Math.min(Math.abs(w.lava - w.lavaShown), dt * 0.8);
-  // every tick stops at the next repair of this fort, which lands at exactly its step
+  // every tick stops at this fort's next repair, which lands at exactly its step, and never passes its next shot
+  // (in the race, shots on the two forts interleave, so the next shot in the log may be on the other fort)
+  const nextHere = w.log.shots.find((x, j) => j > w.i && other(x.by) === w.shown)?.step ?? Infinity;
   const tickTo = (stop: number) => {
-    r.tick(dt, w.lava, Math.min(stop, pend[0]?.step ?? Infinity));
+    r.tick(dt, w.lava, Math.min(stop, nextHere, pend[0]?.step ?? Infinity));
     while (pend.length && r.steps >= pend[0].step) r.repair(pend.shift()!);
   };
   if (w.phase === 'end' || !s) { tickTo(Infinity); return; }
@@ -581,7 +580,7 @@ function onRoom(m: S2C): void {
       return;
     case 'volley': if (match) {
       const mt = match, t = them();
-      mt.volley = m.volley; mt.lava = m.volley - 1;
+      mt.volley = m.volley; mt.lava = lavaFor(mt.rules, m.volley);
       // the other player's repair lands on the fort this phone simulates; this phone's own repair joins its picture
       if (m.repair) mt.sides[t].range?.repair(m.repair as Repair);
       if (m.mine && o.puppet) for (const p of (m.mine as Repair).patches) o.puppet.pieces.push(patchPiece(p, o.puppet.pieces.length));
@@ -595,7 +594,7 @@ function onRoom(m: S2C): void {
 }
 /** Ask the room for a match: the first, a rematch, or Best of Three's next round. */
 function startOnline(rules: Rules, round: number): void {
-  online?.conn.send({ t: 'start', draw: makeDraw(rng), schedule: scheduleFor(rules, round), rules, round });
+  online?.conn.send({ t: 'start', draw: makeDraw(rng, boxFor(rules, round)), schedule: scheduleFor(rules, round), rules, round });
 }
 function lobby(): void {
   const o = online!, friend = o.seats.filter(x => x.here).length > 1;
@@ -616,7 +615,7 @@ function onlineMatch(setup: MatchSetup): void {
   const o = online!, me = o.seat!;
   timers.length = 0;
   const draw = setup.draw as Draw, schedule = setup.schedule as Ammo[][];
-  const sides = ([0, 1] as Seat[]).map((i): Side => ({ team: SEAT_TEAM[i], name: i === me ? 'You' : SEAT_NAME[i], bot: false, fort: [], range: null, left: { ...draw }, reserve: 0 })) as [Side, Side];
+  const sides = ([0, 1] as Seat[]).map((i): Side => ({ team: SEAT_TEAM[i], name: i === me ? 'You' : SEAT_NAME[i], bot: false, fort: [], range: null, left: { ...draw } })) as [Side, Side];
   const log: GameLog = { v: 1, app: __APP__, mode: 'online', started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw, schedule,
     sides: sides.map(x => ({ team: x.team, name: x.name, bot: false, fort: null })) as [SideLog, SideLog], shots: [], volleys: [], winner: null, summary: '' };
   const rules = (setup.rules in MODES ? setup.rules : 'siege') as Rules;
@@ -645,7 +644,7 @@ function onlineSiege(forts: Piece[][], volley: number, resume?: { snap: unknown 
   if (!snap) r.settle(3);
   m.sides[t].range = r; m.sides[me].range = null;
   o.puppet = new Puppet(forts[me], SEAT_TEAM[me]);
-  Object.assign(m, { volley, lava: volley - 1, lavaShown: volley - 1, shooter: me });
+  Object.assign(m, { volley, lava: lavaFor(m.rules, volley), lavaShown: lavaFor(m.rules, volley), shooter: me });
   builder = null; screen = 'siege'; hide(); layout();
   if (resume?.done) { m.busy = true; m.hand = []; m.shotsLeft = 0; o.view = 'own'; onlineBar(); }
   else if (m.rules === 'race') { startRace(); onlineBar(); }
@@ -690,7 +689,7 @@ function onlineDone(): void {
 function onlineRise(volley: number): void {
   const m = match, o = online!;
   if (!m) return;
-  m.lava = volley; m.busy = true; o.note = 'The lava rises'; onlineBar();
+  m.lava = volley * LAVA_STEP; m.busy = true; o.note = 'The lava rises'; onlineBar();
   later(1800, () => {
     const r = target();
     o.conn.send({ t: 'lava', volley, standing: r.standing(), destroyed: r.destruction(), drowned: r.drowned });
@@ -921,11 +920,12 @@ if (import.meta.env.DEV || location.hostname === 'localhost') Object.assign(wind
     return out;
   },
   sims: async (n: number, rules: Rules = 'siege', k: { plushDensity?: number; crush?: number; plushFriction?: number } = {}) => { const sim = await import('./sim'); sim.knobs(k); return sim.simMatches(n, rules); },
-  botFort: () => botFort(makeDraw(rng), 30, rng),
+  botFort: () => botFort(makeDraw(rng), rng),
   sweep: async (fort: number, ammo: Ammo, taped = false, tear?: number) => {
     const sim = await import('./sim');
     if (tear) sim.setTear(tear);
-    return sim.summarise(sim.sweep(BOT_FORTS[fort], ammo, taped ? sim.tapePlushies(BOT_FORTS[fort]) : undefined));
+    const f = sim.testFort(fort);
+    return sim.summarise(sim.sweep(f, ammo, taped ? sim.tapePlushies(f) : undefined));
   },
   hand: () => match && { hand: match.hand, loaded: match.loaded, schedule: match.schedule },
   run: (sec: number) => { for (let i = 0; i < sec * 60; i++) tick(1 / 60); draw(); return `${screen} · ${barLeft.textContent}`; },
@@ -936,6 +936,7 @@ if (import.meta.env.DEV || location.hostname === 'localhost') Object.assign(wind
 } });
 
 (async () => {
+  preloadPieces();
   await initPhysics(wasmUrl);
   layout();
   new ResizeObserver(layout).observe(canvas);

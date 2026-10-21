@@ -3,7 +3,7 @@
 import { World, type Shape } from './physics';
 import { MATERIALS, RUG_W, TRAY, bodyOf, decorate, priceOf, turned, type Piece, type Plushie, type TrayKind } from './fort';
 import { P, drawPiece, drawPlush, rrPath } from './draw';
-import { AMMO, CRUSH, DRILL, JACK, SPLASH, drawAmmo, drawJack, drawTop, type Ammo } from './ammo';
+import { AMMO, CRUSH, DRILL, JACK, POP, SPLASH, drawAmmo, drawJack, drawPopper, drawTop, type Ammo } from './ammo';
 import { FX_LIFE, drawFx, type Fx } from './fx';
 import { drawPlushSprite, drawRoom, drawRug } from './art';
 
@@ -33,7 +33,7 @@ export class Cam {
 
 // out: the plushie no longer counts (it touched down, was crushed, or the lava took it). down: it touched the rug or the
 // floor, which is what starts the slow motion. Kept apart so slow motion depends on the physics alone, never on the lava.
-interface Entry { piece: Piece; id: number; lost: boolean; out: boolean; down: boolean; lostAt: number; gone: boolean; wet: boolean }
+interface Entry { piece: Piece; id: number; lost: boolean; out: boolean; down: boolean; crushed: boolean; lostAt: number; gone: boolean; wet: boolean }
 export type Pull = { x: number; y: number };
 /** One shot fired at this range, and what it did (for the game log and replays). tap: the step its ability was
  *  triggered at. state: the fort's fingerprint when it was fired, so a replay can tell it's still the same game. */
@@ -41,7 +41,11 @@ export interface ShotRec {
   step: number; pull: Pull; ammo: Ammo; tap?: number; state: number;
   impact: [number, number] | null; out: Plushie[]; crushed?: Plushie[]; lost: number;
 }
-interface Flight { ammo: Ammo; ids: number[]; tapped: boolean; drill: number; impactAt: number; lastSpeed: number }
+interface Flight {
+  ammo: Ammo; ids: number[]; tapped: boolean; drill: number; impactAt: number; lastSpeed: number;
+  /** The popper: the step it pops at (-1 until it lands), when it popped, and its own seeded random. */
+  popAt: number; poppedAt: number; rand: () => number;
+}
 
 /** A repair between Siege volleys (04-systems §9): pieces dropped onto the ruins, and tape joining two touching pieces.
  *  Patch x: the piece's left edge in cells from the rug's left. Tape: two piece indices and the seam point (world). */
@@ -87,7 +91,7 @@ export class Range {
     w.add({ x: 0, y: LAVA_TOP - 0.2, shapes: [{ kind: 'box', hw: 60, hh: 0.2 }], mat: MATERIALS.floor, fixed: true });
     w.add({ x: (RUG.x0 + RUG.x1) / 2, y: -0.15, shapes: [{ kind: 'box', hw: (RUG.x1 - RUG.x0) / 2, hh: 0.15 }], mat: MATERIALS.floor, fixed: true });
     w.add({ x: BOOK.x, y: BOOK.y, shapes: [{ kind: 'box', hw: BOOK.hw, hh: BOOK.hh }], mat: MATERIALS.floor, fixed: true });
-    this.entries = blueprint.map(piece => ({ piece, id: w.add(bodyOf(piece, 0)), lost: false, out: false, down: false, lostAt: 0, gone: false, wet: false }));
+    this.entries = blueprint.map(piece => ({ piece, id: w.add(bodyOf(piece, 0)), lost: false, out: false, down: false, crushed: false, lostAt: 0, gone: false, wet: false }));
     for (const e of this.entries) this.byId.set(e.id, e);
   }
 
@@ -100,7 +104,10 @@ export class Range {
     if (this.state !== 'aim' || Math.hypot(pull.x, pull.y) < MIN_PULL) return false;
     const at = this.pouch(pull), v = launchVelocity(pull), a = AMMO[ammo];
     const id = this.world.add({ x: at.x, y: at.y, shapes: [{ kind: 'circle', r: a.r }], mat: a, bullet: true, vx: v.x, vy: v.y, events: true });
-    this.flight = { ammo, ids: [id], tapped: false, drill: -1, impactAt: -1, lastSpeed: Math.hypot(v.x, v.y) };
+    // the popper's random jump comes from the shot itself, so a replay of the shot jumps the same way
+    let seed = ((this.steps * 73856093) ^ (Math.round(pull.x * 1e5) * 19349663) ^ (Math.round(pull.y * 1e5) * 83492791)) >>> 0 || 1;
+    const rand = () => { seed ^= seed << 13; seed >>>= 0; seed ^= seed >>> 17; seed ^= seed << 5; seed >>>= 0; return seed / 4294967296; };
+    this.flight = { ammo, ids: [id], tapped: false, drill: -1, impactAt: -1, lastSpeed: Math.hypot(v.x, v.y), popAt: -1, poppedAt: -1, rand };
     this.state = 'flight'; this.flightT = 0; this.trail = [];
     this.shots.push({ step: this.steps, pull: { ...pull }, ammo, state: this.fingerprint(), impact: null, out: [], lost: 0 });
     return true;
@@ -122,11 +129,32 @@ export class Range {
           mat: { density: JACK.density, friction: 0.6, restitution: 0.15 }, bullet: true, vx: Math.cos(a) * s, vy: Math.sin(a) * s, spin: (i - 1.5) * 8, events: true }));
       });
       this.fx.push({ kind: 'scatter', x: p.x, y: p.y, at: this.steps });
+    } else if (f.ammo === 'popper') {   // pops now, wherever it is
+      this.pop();
     } else if (f.ammo === 'top') {   // stops dead and drills straight down. Still a body among bodies: light pieces give way,
       w.setVelocity(id, 0, -DRILL.speed, DRILL.spin);   // a heavy stack stops it (a kinematic drill flattened whole towers)
       f.drill = Math.round(DRILL.maxT * 60);
     } else this.burst(p.x, p.y);
     return true;
+  }
+
+  /** The popper goes off: a shove to everything close, and it jumps away in a random direction. */
+  private pop(): void {
+    const f = this.flight!, w = this.world, id = f.ids[0];
+    if (id === undefined || f.poppedAt >= 0) return;
+    const p = w.transform(id);
+    f.poppedAt = this.flightT; f.tapped = true;
+    if (f.impactAt < 0) { f.impactAt = this.flightT; this.shots[this.shots.length - 1].impact = [round2(p.x), round2(p.y)]; }
+    for (const e of this.entries) {
+      if (e.gone) continue;
+      const t = w.transform(e.id), dx = t.x - p.x, dy = t.y - p.y, d = Math.hypot(dx, dy);
+      if (d > POP.radius) continue;
+      const imp = POP.impulse * (1 - d / POP.radius), n = d > 0.05 ? 1 / d : 0;
+      w.impulse(e.id, (n ? dx * n : 0) * imp, ((n ? dy * n : 1) + POP.lift) * imp);
+    }
+    const a = Math.PI / 2 + (f.rand() - 0.5) * 2 * POP.spread, sp = POP.speed * (0.85 + 0.3 * f.rand());
+    w.setVelocity(id, Math.cos(a) * sp, Math.sin(a) * sp, (f.rand() - 0.5) * 30);
+    this.fx.push({ kind: 'pop', x: p.x, y: p.y, at: this.steps });
   }
 
   /** The water balloon bursts: a push wave, and everything it reaches is soaked (slippery). */
@@ -152,7 +180,7 @@ export class Range {
     for (const p of r.patches) {
       const piece = patchPiece(p, this.entries.length);
       piece.y = this.topUnder(piece.x, piece.x + piece.w) + 0.05;
-      const e: Entry = { piece, id: w.add(bodyOf(piece, 0)), lost: false, out: false, down: false, lostAt: 0, gone: false, wet: false };
+      const e: Entry = { piece, id: w.add(bodyOf(piece, 0)), lost: false, out: false, down: false, crushed: false, lostAt: 0, gone: false, wet: false };
       this.entries.push(e); this.byId.set(e.id, e);
     }
     for (const [a, b, x, y] of r.tapes) {
@@ -212,9 +240,17 @@ export class Range {
     if (f.ammo === 'balloon' && f.ids.length && this.flightT > 0.15 && w.begins.some(([a, b]) => a === f.ids[0] || b === f.ids[0])) {
       const p = w.transform(f.ids[0]); this.burst(p.x, p.y); return;
     }
-    const crush = (e: Entry | undefined) => {
-      if (!e || e.piece.type !== 'plush' || e.out) return;
-      e.out = true; this.slow = SLOW.steps;
+    if (f.ammo === 'popper' && f.ids.length) {   // armed on its first touch, pops a moment later
+      if (f.popAt < 0 && f.poppedAt < 0 && this.flightT > 0.15 && w.begins.some(([a, b]) => a === f.ids[0] || b === f.ids[0])) {
+        f.popAt = this.steps + POP.delay[0] + Math.floor(f.rand() * (POP.delay[1] - POP.delay[0]));
+      }
+      if (f.popAt >= 0 && f.poppedAt < 0 && this.steps >= f.popAt) this.pop();
+    }
+    const crush = (e: Entry | undefined) => {   // slow motion follows the hit itself, never whether the lava already took it
+      if (!e || e.piece.type !== 'plush' || e.crushed) return;
+      e.crushed = true; this.slow = SLOW.steps;
+      if (e.out) return;
+      e.out = true;
       shot.out.push(e.piece.plush!); (shot.crushed ??= []).push(e.piece.plush!);
       const t = w.transform(e.id); this.fx.push({ kind: 'puff', x: t.x, y: t.y, at: this.steps });
     };
@@ -238,11 +274,13 @@ export class Range {
       if (e.gone) continue;
       const t = this.world.transform(e.id);
       if (e.piece.type === 'plush') {
-        if (!e.down && t.y < 0.62) {   // on the rug or the floor
+        // its lowest point, however it's turned: touching the rug (y 0) or the floor means out, and so does the lava reaching it
+        const low = t.y - (e.piece.w / 2) * Math.abs(Math.sin(t.angle)) - (e.piece.h / 2) * Math.abs(Math.cos(t.angle));
+        if (!e.down && low < 0.06) {
           e.down = true;
           if (live) this.slow = SLOW.steps;
           if (!e.out) { e.out = true; shot?.out.push(e.piece.plush!); }
-        } else if (!e.out && t.y - 0.5 < lava - 0.02) { e.out = true; this.drowned.push(e.piece.plush!); }   // the risen lava reached its feet
+        } else if (!e.out && low < lava - 0.02) { e.out = true; this.drowned.push(e.piece.plush!); }
       } else if (!e.lost && t.y < 1.5 && (t.x < RUG.x0 || t.x > RUG.x1)) {   // knocked off the rug
         e.lost = true; e.lostAt = this.steps;
         if (shot) shot.lost++;
@@ -264,7 +302,8 @@ export class Range {
     }
     // the next shot is ready shortly after the hit, while the fort is still settling (playtest 1: waiting for rest was too slow)
     const gone = f.ids.every(id => { const p = this.world.transform(id); return !this.world.awake(id) || Math.abs(p.x) > 40 || p.y < -5; });
-    const done = (f.impactAt >= 0 && this.flightT - f.impactAt > 1.6) || gone || this.flightT > 6;
+    const settled = f.ammo === 'popper' ? f.poppedAt >= 0 && this.flightT - f.poppedAt > 1.8 : f.impactAt >= 0 && this.flightT - f.impactAt > 1.6;
+    const done = settled || (gone && !(f.ammo === 'popper' && f.popAt >= 0 && f.poppedAt < 0)) || this.flightT > 7;
     if (done) {
       for (const id of f.ids) this.world.remove(id);
       this.flight = null; this.state = 'aim'; this.lastTrail = this.trail;
@@ -309,7 +348,7 @@ export class Range {
         const flags = (e.out ? 1 : 0) | (e.lost ? 2 : 0) | (e.gone ? 4 : 0) | (e.wet ? 8 : 0);
         return [r3(t.x), r3(t.y), r3(t.angle), flags, e.lost ? Math.min(1, (this.steps - e.lostAt) / LOST_FADE) : 0];
       }),
-      ammo: f && f.ids.length ? { kind: f.ammo, tapped: f.tapped, drilling: f.drill > 0, b: f.ids.map(id => { const t = this.world.transform(id); return [r3(t.x), r3(t.y), r3(t.angle)]; }) } : null,
+      ammo: f && f.ids.length ? { kind: f.ammo, tapped: f.tapped, drilling: f.drill > 0 || (f.popAt >= 0 && f.poppedAt < 0), b: f.ids.map(id => { const t = this.world.transform(id); return [r3(t.x), r3(t.y), r3(t.angle)]; }) } : null,
       fx: this.fx.map(x => ({ ...x })),
       tapes: this.tapes.filter(t => t.on).map(t => this.tapePos(t)),
     };
@@ -376,7 +415,7 @@ export function drawScene(c: CanvasRenderingContext2D, cam: Cam, pieces: Piece[]
     c.save(); c.translate(sx(x), sy(y)); c.rotate(-a);
     if (flags & 2) c.globalAlpha = Math.max(0, 1 - fade);
     const out = !!(flags & 1);
-    if (piece.type === 'plush') { if (!drawPlushSprite(c, piece.plush!, team, k, out)) drawPlush(c, piece.plush!, piece.w * k, piece.h * k, out, team === 'blue' ? P.blue : P.green); }
+    if (piece.type === 'plush') { if (!drawPlushSprite(c, piece.plush!, team, k, out, piece.h)) drawPlush(c, piece.plush!, piece.w * k, piece.h * k, out, team === 'blue' ? P.blue : P.green); }
     else drawPiece(c, piece, k);
     if (flags & 8) wet(c, piece, k, s.steps);
     c.restore();
@@ -388,6 +427,7 @@ export function drawScene(c: CanvasRenderingContext2D, cam: Cam, pieces: Piece[]
     c.save(); c.translate(sx(x), sy(y));
     if (f.kind === 'jacks' && f.tapped) { c.rotate(-a); drawJack(c, JACK.arm * 1.25 * k); }
     else if (f.kind === 'top') drawTop(c, AMMO.top.r * k, s.steps * (f.drilling ? 0.9 : 0.25));
+    else if (f.kind === 'popper') { if (!f.drilling) c.rotate(-a); drawPopper(c, AMMO.popper.r * k, f.drilling, s.steps / 60); }   // drilling = armed
     else { if (f.kind !== 'balloon') c.rotate(-a); drawAmmo(c, f.kind, AMMO[f.kind].r * k, s.steps / 60); }
     c.restore();
   }

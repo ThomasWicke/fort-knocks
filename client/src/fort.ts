@@ -19,7 +19,7 @@ export const MATERIALS: Record<Family | 'marble' | 'floor', Material> = {
   domino: { density: 0.6, friction: 0.6, restitution: 0.05 },
   block: { density: 1.0, friction: 0.8, restitution: 0.05 },
   book: { density: 2.0, friction: 0.8, restitution: 0.02 },
-  plush: { density: 2.0, friction: 0.9, restitution: 0.0 },   // bean-filled; was 0.5: bot-vs-bot Sieges ended early with every fort wiped (sim.ts)
+  plush: { density: 1.4, friction: 0.9, restitution: 0.0 },   // bean-filled: mass 2, twice a block (was 0.5 × 1 cell; sim.ts). 1.4 since the body is 1 × 1.4
   marble: { density: 4.0, friction: 0.3, restitution: 0.2 },   // was 8: one shot swept all three plushies off (playtest 1)
   floor: { density: 0, friction: 0.8, restitution: 0 },
 };
@@ -35,7 +35,7 @@ export const TRAY_ORDER: TrayKind[] = ['card', 'tent', 'domino', 'block', 'tri',
 export const TRAY: Record<TrayKind, { price: number; make: () => Omit<Piece, 'x' | 'y'> }> = {
   card: { price: 1, make: () => ({ type: 'cardFlat', w: 2, h: CARD_T }) },
   tent: { price: 1, make: () => ({ type: 'cardTent', w: 1.5, h: 1.4 }) },
-  domino: { price: 1, make: () => ({ type: 'domStand', w: 0.5, h: 2 }) },
+  domino: { price: 1, make: () => ({ type: 'domStand', w: 0.75, h: 2 }) },   // 0.75 wide (was 0.5): a real domino's shape, as drawn
   block: { price: 2, make: () => ({ type: 'block', w: 1, h: 1 }) },
   tri: { price: 2, make: () => ({ type: 'tri', w: 1, h: 1 }) },
   long: { price: 3, make: () => ({ type: 'long', w: 2, h: 1 }) },
@@ -74,28 +74,42 @@ export function decorate(p: Piece, i: number): Piece {
 }
 
 // ---------- the draw: identical for both players (the duplicate-bridge rule) ----------
+// No budget (Thomas, playtest 3: "the budget doesn't make building fun enough"): you may use everything in the box,
+// and the box itself changes every match or round: a random mix of 4–6 kinds. Prices stay only as each piece's
+// value, which weighs the destruction tiebreak.
 export type Draw = Record<TrayKind, number>;
-export const BUDGET = 30;
-const RANGES: Record<TrayKind, [number, number]> = { card: [3, 5], tent: [2, 3], domino: [4, 6], block: [4, 7], tri: [1, 2], long: [2, 3], arch: [1, 2], book: [2, 4] };
-export function makeDraw(rng: () => number): Draw {
-  const d = {} as Draw;
-  for (const k of TRAY_ORDER) { const [a, b] = RANGES[k]; d[k] = a + Math.floor(rng() * (b - a + 1)); }
-  return d;
+const MAX_OF: Record<TrayKind, number> = { card: 6, tent: 4, domino: 8, block: 8, tri: 4, long: 5, arch: 3, book: 5 };
+export function makeDraw(rng: () => number, size = 18): Draw {
+  for (;;) {
+    const kinds = [...TRAY_ORDER];
+    for (let i = kinds.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [kinds[i], kinds[j]] = [kinds[j], kinds[i]]; }
+    const use = kinds.slice(0, 4 + Math.floor(rng() * 3)), d = Object.fromEntries(TRAY_ORDER.map(k => [k, 0])) as Draw;
+    for (let n = 0, tries = 0; n < size && tries < 200; tries++) { const k = use[Math.floor(rng() * use.length)]; if (d[k] < MAX_OF[k]) { d[k]++; n++; } }
+    // always enough to lift three plushies the minimum cell (and a bit more)
+    const lifts = d.block + d.long + d.arch + d.tent + Math.floor(d.book / 2) + Math.floor(d.domino / 2);
+    if (lifts >= 4) return d;
+  }
 }
+export const boxSize = (d: Draw): number => TRAY_ORDER.reduce((n, k) => n + d[k], 0);
 
 // ---------- build rules (docs/02-core-design.md §2, 04-systems.md §4) ----------
-// MIN_PLUSH_Y 2 (was 3): the rising lava already punishes low plushies, and 3 cost most of the budget (playtest 1)
-export const RUG_W = 10, CAP = 7, MIN_PLUSH_Y = 2,   // CAP 7 (not 12 as in 04-systems): a phone's height is the limit
+// MIN_PLUSH_Y 1 (was 3, then 2): propping the plushies up took 90% of the pieces (playtests 1 and 3)
+export const RUG_W = 10, CAP = 7, MIN_PLUSH_Y = 1,   // CAP 7 (not 12 as in 04-systems): a phone's height is the limit
    PLUSHIES: Plushie[] = ['brumm', 'hoppel', 'socke'];
+/** A plushie's body: taller than wide, to match its sprite (playtest 3: the sprites were bigger than their 1 × 1 boxes). */
+export const PLUSH_W = 1, PLUSH_H = 1.4;
 const E = 1e-6;
 export const overlaps = (a: Piece, b: Piece): boolean =>
   a.x < b.x + b.w - E && b.x < a.x + a.w - E && a.y < b.y + b.h - E && b.y < a.y + a.h - E;
-/** The open-sky funnel: a V opening upward from the plushie's feet, 30° from vertical. Nothing may be inside it.
- *  (04-systems started at 45°; in the prototype that kept two tall towers from standing side by side.) */
-export const FUNNEL_SLOPE = Math.tan(Math.PI / 6);
+/** The open-sky funnel: a V opening upward from the plushie's waist, 20° from vertical. Nothing may reach into it.
+ *  04-systems started at 45° from the feet; the prototype went to 30°, and playtest 3 to 20° from the waist, so pieces
+ *  may come up to a plushie's waist. Watch for cheat castles. */
+export const FUNNEL_SLOPE = Math.tan((20 * Math.PI) / 180);
+export const funnelBase = (pl: Piece): number => pl.y + pl.h / 2;
 export function inFunnel(pl: Piece, p: Piece): boolean {
-  if (p === pl || p.y + p.h <= pl.y + E) return false;
-  const hwTop = 0.5 + (p.y + p.h - pl.y) * FUNNEL_SLOPE, cx = pl.x + 0.5;
+  const base = funnelBase(pl);
+  if (p === pl || p.y + p.h <= base + E) return false;
+  const hwTop = pl.w / 2 + (p.y + p.h - base) * FUNNEL_SLOPE, cx = pl.x + pl.w / 2;
   return p.x < cx + hwTop - E && p.x + p.w > cx - hwTop + E;
 }
 /** Where a piece lands if dropped at x: on the highest surface under yHint (physics is off while building). */
@@ -140,12 +154,12 @@ export function bodyOf(p: Piece, rugX: number): BodySpec {
   return { x: rugX + p.x + p.w / 2, y: p.y + p.h / 2, shapes: shapesOf(p), mat: MATERIALS[familyOf(p.type)] };
 }
 
-// ---------- forts the bot builds (all legal and within the budget; they ignore the draw's counts) ----------
+// ---------- hand-made bot forts: only a fallback since bot.ts builds from the box (they ignore the draw's counts) ----------
 type Spec = [PieceType, number, number, number, number, Plushie?];
-const fort = (specs: Spec[]): Piece[] => specs.map(([type, x, y, w, h, plush], i) => decorate({ type, x, y, w, h, plush }, i));
+const fort = (specs: Spec[]): Piece[] => specs.map(([type, x, y, w, h, plush], i) => decorate(type === 'plush' ? { type, x, y, w: PLUSH_W, h: PLUSH_H, plush } : { type, x, y, w, h, plush }, i));
 const T = CARD_T;
 export const BOT_FORTS: Piece[][] = [
-  fort([   // three towers (the style-frame fort, trimmed to the budget)
+  fort([   // three towers (the style-frame fort)
     ['block', 0, 0, 1, 1], ['block', 2, 0, 1, 1], ['bookLie', 0, 1, 3, 0.5], ['block', 1, 1.5, 1, 1], ['block', 1, 2.5, 1, 1],
     ['arch', 3.5, 0, 2, 1], ['domStand', 3.55, 1, 0.5, 2], ['domStand', 4.95, 1, 0.5, 2], ['cardFlat', 3.4, 3, 2.2, T], ['cardTent', 3.75, 3 + T, 1.5, 1.4], ['cardFlat', 3.5, 3 + T + 1.4, 2, T],
     ['long', 6.5, 0, 1, 2], ['long', 8.5, 0, 1, 2], ['bookLie', 6.5, 2, 3, 0.5], ['block', 7.5, 2.5, 1, 1],

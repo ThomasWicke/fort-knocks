@@ -88,13 +88,14 @@ for (const p of ['brumm', 'hoppel', 'socke'] as Plushie[]) for (const t of ['blu
     greys[key] = cv;
   });
 }
-/** A plushie sprite standing on the bottom of its 1 × 1 body (k = px per cell), centred on the origin. False until loaded. */
-export function drawPlushSprite(c: CanvasRenderingContext2D, who: Plushie, team: Team, k: number, out: boolean): boolean {
+/** A plushie sprite standing on the bottom of its body (bodyH cells tall, centred on the origin; k = px per cell).
+ *  The body matches the sprite (playtest 3), with only ears and tips above it. False until loaded. */
+export function drawPlushSprite(c: CanvasRenderingContext2D, who: Plushie, team: Team, k: number, out: boolean, bodyH = 1.4): boolean {
   const key = `${who}-${team}`, img = plushies[key];
   if (!ready(img)) return false;
   const src: CanvasImageSource = out && greys[key] ? greys[key] : img;
-  const h = k * 1.6, w = (h * img.naturalWidth) / img.naturalHeight;   // drawn bigger than the body, feet on its bottom
-  c.drawImage(src, -w / 2, k / 2 - h, w, h);
+  const h = k * (bodyH + 0.12), w = (h * img.naturalWidth) / img.naturalHeight;
+  c.drawImage(src, -w / 2, (k * bodyH) / 2 - h, w, h);
   return true;
 }
 

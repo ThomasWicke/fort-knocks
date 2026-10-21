@@ -3,7 +3,7 @@
 // breaks a rule turns red and says why, and only Test (overlaps) and Ready (all rules) wait until it's fixed.
 // (Playtest 1: refusing placements without a reason made building hard to figure out.)
 import {
-  BUDGET, CAP, FUNNEL_SLOPE, MIN_PLUSH_Y, PLUSHIES, RUG_W, TRAY, TRAY_ORDER, decorate, dropY, inFunnel, overlaps, priceOf, trayKindOf, turned,
+  CAP, FUNNEL_SLOPE, MIN_PLUSH_Y, PLUSHIES, PLUSH_H, PLUSH_W, RUG_W, TRAY, TRAY_ORDER, decorate, dropY, funnelBase, inFunnel, overlaps, trayKindOf, turned,
   type Draw, type Piece, type Plushie, type TrayKind,
 } from './fort';
 import { FONT, HAND, P, drawPiece, drawPlush, rrPath } from './draw';
@@ -20,7 +20,6 @@ type Drag = { piece: Piece; from: 'tray' | 'field'; original: Piece | null; gx: 
 export class Builder {
   pieces: Piece[] = [];
   left: Draw;
-  spent = 0;
   cam = new Cam();
   slots: Slot[] = [];
   drag: Drag | null = null;
@@ -37,9 +36,10 @@ export class Builder {
   private lastPy = 0;   // the finger's height, so the box can light up under it
   private w = 0; private h = 0; private top = 0;
 
-  constructor(public team: 'blue' | 'green', draw: Draw, now: number, public budget = BUDGET) { this.left = { ...draw }; this.started = now; }
+  /** No budget (playtest 3): everything in the box may be used. The box shows only the kinds this draw has. */
+  constructor(public team: 'blue' | 'green', private box: Draw, now: number) { this.left = { ...box }; this.started = now; }
 
-  get budgetLeft(): number { return this.budget - this.spent; }
+  get piecesLeft(): number { return TRAY_ORDER.reduce((n, k) => n + this.left[k], 0); }
   get plushiesPlaced(): number { return this.pieces.filter(p => p.type === 'plush').length; }
   /** What still stands between this fort and Ready, in words; null when it's ready. */
   get blocker(): string | null {
@@ -52,7 +52,7 @@ export class Builder {
   get testable(): boolean { return ![...this.problems().values()].some(r => r === 'overlaps another piece'); }
 
   /** Load a whole fort at once (the dev hook uses it); ignores the draw. */
-  load(fort: Piece[]): void { this.pieces = fort.map(p => ({ ...p })); this.spent = this.pieces.reduce((s, p) => s + priceOf(p), 0); this.layout(this.w, this.h, this.top); }
+  load(fort: Piece[]): void { this.pieces = fort.map(p => ({ ...p })); this.layout(this.w, this.h, this.top); }
 
   layout(w: number, h: number, top: number): void {
     this.w = w; this.h = h; this.top = top;
@@ -60,7 +60,7 @@ export class Builder {
     this.cam.fit({ x0: -0.7, x1: RUG_W + 0.7, y0: -0.45, y1: CAP + 0.15 }, { x: 8, y: Math.max(4, top - 30), w: w - 16, h: h - Math.max(4, top - 30) - TRAY_H - LIFT - 4 });
     // every slot keeps its place all build long (empty ones grey out), so a finger always finds the same piece in the same spot
     const kinds: Slot[] = [];
-    for (const k of TRAY_ORDER) kinds.push({ kind: k, x: 0, y: 0, w: 0, h: 0 });
+    for (const k of TRAY_ORDER) if (this.box[k] > 0) kinds.push({ kind: k, x: 0, y: 0, w: 0, h: 0 });
     for (const pl of PLUSHIES) kinds.push({ kind: 'plush', plush: pl, x: 0, y: 0, w: 0, h: 0 });
     const sw = Math.min(80, (w - 24) / Math.max(kinds.length, 1)), x0 = (w - sw * kinds.length) / 2;
     kinds.forEach((s, i) => Object.assign(s, { x: x0 + i * sw + 3, y: h - LIFT - TRAY_H + 5, w: sw - 6, h: TRAY_H - 10 }));
@@ -94,7 +94,7 @@ export class Builder {
     const slot = this.slots.find(s => px >= s.x && px <= s.x + s.w && py >= s.y && py <= s.y + s.h);
     if (slot) {
       if (!this.available(slot)) return;
-      if (slot.kind === 'plush') this.startDrag({ type: 'plush', x: 0, y: 0, w: 1, h: 1, plush: slot.plush }, 'tray', null, px, py);
+      if (slot.kind === 'plush') this.startDrag({ type: 'plush', x: 0, y: 0, w: PLUSH_W, h: PLUSH_H, plush: slot.plush }, 'tray', null, px, py);
       else this.startDrag({ ...TRAY[slot.kind].make(), x: 0, y: 0 }, 'tray', null, px, py);
       return;
     }
@@ -146,16 +146,16 @@ export class Builder {
     }
     if (d.from === 'tray') {
       const k = trayKindOf(d.piece);
-      if (k) { this.left[k]--; this.spent += TRAY[k].price; }
+      if (k) this.left[k]--;
       this.pieces.push(decorate(d.piece, this.placed++));
     } else this.pieces.push(d.piece);
     this.changed();
   }
   private available(s: Slot): boolean {
     if (s.kind === 'plush') return !this.pieces.some(p => p.plush === s.plush) && this.held?.plush !== s.plush;
-    return this.left[s.kind] > 0 && TRAY[s.kind].price <= this.budgetLeft;
+    return this.left[s.kind] > 0;
   }
-  private refund(p: Piece): void { const k = trayKindOf(p); if (k) { this.left[k]++; this.spent -= TRAY[k].price; } }
+  private refund(p: Piece): void { const k = trayKindOf(p); if (k) this.left[k]++; }
   /** After every change the blueprint settles: pieces rest on what's under them, so nothing floats. */
   private changed(): void {
     const done: Piece[] = [];
@@ -231,7 +231,7 @@ export class Builder {
   private piece(c: CanvasRenderingContext2D, p: Piece, scale: number): void {
     const { cam } = this, k = cam.k * scale;
     c.save(); c.translate(cam.sx(p.x + p.w / 2), cam.sy(p.y + p.h / 2));
-    if (p.type === 'plush') { if (!drawPlushSprite(c, p.plush!, this.team, k, false)) drawPlush(c, p.plush!, p.w * k, p.h * k, false, this.team === 'blue' ? P.blue : P.green); }
+    if (p.type === 'plush') { if (!drawPlushSprite(c, p.plush!, this.team, k, false, p.h)) drawPlush(c, p.plush!, p.w * k, p.h * k, false, this.team === 'blue' ? P.blue : P.green); }
     else drawPiece(c, p, k);
     c.restore();
   }
@@ -259,11 +259,11 @@ export class Builder {
   }
   /** The open-sky funnel, drawn so the rule explains itself. */
   private funnel(c: CanvasRenderingContext2D, pl: Piece, blocked: boolean): void {
-    const { cam } = this, up = (CAP - pl.y) * FUNNEL_SLOPE;
+    const { cam } = this, base = funnelBase(pl), up = (CAP - base) * FUNNEL_SLOPE;
     c.strokeStyle = blocked ? P.toyRed : 'rgba(74,70,80,0.45)'; c.lineWidth = 2; c.setLineDash([4, 5]);
     c.beginPath();
-    c.moveTo(cam.sx(pl.x), cam.sy(pl.y)); c.lineTo(cam.sx(pl.x - up), cam.sy(CAP));
-    c.moveTo(cam.sx(pl.x + 1), cam.sy(pl.y)); c.lineTo(cam.sx(pl.x + 1 + up), cam.sy(CAP));
+    c.moveTo(cam.sx(pl.x), cam.sy(base)); c.lineTo(cam.sx(pl.x - up), cam.sy(CAP));
+    c.moveTo(cam.sx(pl.x + pl.w), cam.sy(base)); c.lineTo(cam.sx(pl.x + pl.w + up), cam.sy(CAP));
     c.stroke(); c.setLineDash([]);
   }
   private tray(c: CanvasRenderingContext2D): void {
@@ -275,18 +275,14 @@ export class Builder {
       const affordable = this.available(s);
       const box = rrPath(s.x, s.y, s.w, s.h, 8);
       c.fillStyle = affordable ? '#E7D2AE' : '#BFA27A'; c.fill(box); c.strokeStyle = P.ink; c.lineWidth = 1.5; c.stroke(box);
-      const piece: Piece = s.kind === 'plush' ? { type: 'plush', x: 0, y: 0, w: 1, h: 1, plush: s.plush } : decorate({ ...TRAY[s.kind].make(), x: 0, y: 0 }, TRAY_ORDER.indexOf(s.kind));
+      const piece: Piece = s.kind === 'plush' ? { type: 'plush', x: 0, y: 0, w: PLUSH_W, h: PLUSH_H, plush: s.plush } : decorate({ ...TRAY[s.kind].make(), x: 0, y: 0 }, TRAY_ORDER.indexOf(s.kind));
       const k = Math.min((s.w - 18) / piece.w, (s.h - 24) / Math.max(piece.h, 0.5), 20);
       c.save(); c.globalAlpha = affordable ? 1 : 0.45; c.translate(s.x + s.w / 2, s.y + (s.h - 16) / 2 + 2);
-      if (piece.type === 'plush') { c.translate(0, -k * 0.2); if (!drawPlushSprite(c, piece.plush!, this.team, k * 0.85, false)) drawPlush(c, piece.plush!, k, k, false, this.team === 'blue' ? P.blue : P.green); }
+      if (piece.type === 'plush') { if (!drawPlushSprite(c, piece.plush!, this.team, k, false)) drawPlush(c, piece.plush!, k, k, false, this.team === 'blue' ? P.blue : P.green); }
       else drawPiece(c, piece, k);
       c.restore();
       c.fillStyle = P.ink; c.font = `700 12px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'alphabetic';
       c.fillText(s.kind === 'plush' ? (affordable ? NAME[s.plush!] : 'on the rug') : `${this.left[s.kind]} left`, s.x + s.w / 2, s.y + s.h - 5);
-      if (s.kind !== 'plush') {   // the price, as a coin in the corner
-        c.fillStyle = P.toyYellow; c.beginPath(); c.arc(s.x + s.w - 9, s.y + 9, 8, 0, Math.PI * 2); c.fill(); c.lineWidth = 1.5; c.strokeStyle = P.ink; c.stroke();
-        c.fillStyle = P.ink; c.font = `800 11px ${FONT}`; c.textBaseline = 'middle'; c.fillText(String(TRAY[s.kind].price), s.x + s.w - 9, s.y + 9.5);
-      }
     }
     if (carrying) {   // while carrying a piece, the box says what dropping it there does
       const over = this.lastPy > y;

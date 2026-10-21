@@ -55,6 +55,7 @@ function pips(c: CanvasRenderingContext2D, cx: number, cy: number, n: number, s:
 
 /** Draw a piece centred on the origin. k = pixels per cell. */
 export function drawPiece(c: CanvasRenderingContext2D, p: Piece, k: number): void {
+  if (drawPieceSprite(c, p, k)) return;   // the illustrated piece once its image has loaded; this code drawing until then
   const w = p.w * k, h = p.h * k, x = -w / 2, y = -h / 2, r = Math.min(w, h) * 0.12, paint = p.paint ? P[p.paint as Paint] : P.cream;
   switch (p.type) {
     case 'block': case 'long':
@@ -146,4 +147,43 @@ export function drawMarble(c: CanvasRenderingContext2D, r: number): void {
   c.restore();
   c.fillStyle = 'rgba(255,255,255,0.85)'; c.beginPath(); c.arc(-r * 0.35, -r * 0.4, r * 0.25, 0, Math.PI * 2); c.fill();
   c.lineWidth = 2; c.strokeStyle = P.ink; c.beginPath(); c.arc(0, 0, r, 0, Math.PI * 2); c.stroke();
+}
+
+// ---------- illustrated pieces (playtest 3: "more in line with the concept art") ----------
+// One sprite per kind and colour, cut to the exact proportions of the piece's box (dev/art/make_pieces.py). A standing
+// long block, book or lying domino is the same sprite turned a quarter. The flat card stays a drawn line.
+const pieceImgs = new Map<string, HTMLImageElement>();
+function pieceImg(name: string): HTMLImageElement | null {
+  if (typeof Image === 'undefined') return null;   // headless (sims)
+  let i = pieceImgs.get(name);
+  if (!i) { i = new Image(); i.decoding = 'async'; i.src = `/art/pieces/${name}.png`; pieceImgs.set(name, i); }
+  return i.complete && i.naturalWidth > 0 ? i : null;
+}
+const COLOUR: Partial<Record<Paint, string>> = { toyRed: 'red', toyYellow: 'yellow', wood: 'wood', cream: 'cream', bookOx: 'ox', bookMustard: 'mustard', bookPlum: 'plum' };
+/** Which sprite a piece uses, and whether it's turned a quarter from the way the sprite was drawn. */
+function spriteOf(p: Piece): [string, boolean] | null {
+  const col = p.paint ? COLOUR[p.paint] : undefined;
+  switch (p.type) {
+    case 'block': return [`block-${col ?? 'wood'}`, false];
+    case 'long': return [`long-${col ?? 'wood'}`, p.h > p.w];
+    case 'arch': return [`arch-${col === 'yellow' || col === 'red' ? 'yellow' : 'wood'}`, false];
+    case 'tri': return [`tri-${p.sym === 'star' ? 'red' : 'wood'}`, false];
+    case 'domStand': case 'domLie': return [`domino-${((p.pips?.[0] ?? 1) + (p.pips?.[1] ?? 1)) % 3 + 1}`, p.type === 'domLie'];
+    case 'cardTent': return ['tent', false];
+    case 'bookLie': case 'bookStand': return [`book-${col === 'mustard' || col === 'plum' ? col : 'ox'}`, p.type === 'bookStand'];
+    default: return null;
+  }
+}
+/** Preload every piece sprite (the build screen shows them all at once). */
+export function preloadPieces(): void {
+  for (const n of ['block-red', 'block-yellow', 'block-wood', 'block-cream', 'long-red', 'long-yellow', 'long-wood', 'long-cream', 'arch-yellow', 'arch-wood',
+    'tri-wood', 'tri-red', 'domino-1', 'domino-2', 'domino-3', 'tent', 'book-ox', 'book-mustard', 'book-plum']) pieceImg(n);
+}
+export function drawPieceSprite(c: CanvasRenderingContext2D, p: Piece, k: number): boolean {
+  const s = spriteOf(p); if (!s) return false;
+  const img = pieceImg(s[0]); if (!img) return false;
+  const w = p.w * k, h = p.h * k;
+  if (s[1]) { c.save(); c.rotate(-Math.PI / 2); c.drawImage(img, -h / 2, -w / 2, h, w); c.restore(); }
+  else c.drawImage(img, -w / 2, -h / 2, w, h);
+  return true;
 }

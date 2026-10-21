@@ -72,7 +72,7 @@ Why the prices are what they are (a cost curve, Schreiber): a price should match
 | **Glass marble** | Punch | small, dense, fast | nothing, it's the pure skill shot | Dominoes (starts chains), plushies hit directly |
 | **Jacks** | Split | a bundle | scatters into 4 jacks fanning out | Card tents, forts spread out wide (stilts, H3) |
 | **Spinning top** | Drill | heavy, slower | stops dead and drills straight down, shoving pieces aside | Toy-block towers, plushies you can only reach from above |
-| **Water balloon** | Splash | big, soft, wobbly | bursts early (otherwise it bursts on impact): a push wave plus a soaking | Books (wet books lose grip and slide), card tents (go limp) |
+| ~~Water balloon~~ **Popper** (playtest 3) | Pop | a rubber half-ball | lands, then pops after a moment (or on a tap): a strong shove to everything near, and it jumps off in a random direction | Anything it lands inside (the balloon was best against books) |
 
 **Later, not in version 1:** bouncy ball (Bounce: tap for a super bounce), yo-yo (Return: tap to snap back and hit from behind), toy car (Dash: tap for a horizontal boost). Four complete ammo types beat seven rough ones ("small and complete", brief).
 
@@ -164,8 +164,8 @@ The fiction is a rainy afternoon, with three games the siblings play:
 ## 13. Starting numbers
 | What | Value | Why |
 |---|---|---|
-| Plushie minimum height | ~~3~~ **2 cells** (playtest 1) | 3 used up most of the budget; the rising lava already punishes low plushies |
-| Funnel | ~~45°~~ **30° from vertical**, from the feet (prototype) | 45° kept two tall towers from standing side by side |
+| Plushie minimum height | ~~3~~ ~~2~~ **1 cell** (playtests 1 and 3) | propping plushies up took most of the pieces; the lava rises half a cell at a time so 1 isn't a trap |
+| Funnel | ~~45°~~ ~~30°~~ **20° from vertical, from the waist** (prototype, playtest 3) | 45° kept two tall towers from standing side by side; 30° from the feet was still too strict |
 | Crushing hit | ~~a marble at about 60% power~~ momentum 14: a marble at about three quarters of full power, hitting directly (tuned in Phase 6) | Direct hits should count, but bumps shouldn't |
 | Tape tears at | about a toy block falling 2 cells | Survives wobbling, not a real hit |
 | Preview | 35% of the arc | Somewhere between Angry Birds (none) and a full guide |

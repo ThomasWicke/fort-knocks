@@ -2,7 +2,7 @@
 // and powers, tap the way a good player would, and measure what each shot did. No DOM; runs anywhere physics does.
 import { MATERIALS, makeDraw, type Piece } from './fort';
 import { botAim, botFort, botTap } from './bot';
-import { MODES, roundAmmo, type Rules } from './modes';
+import { LAVA_STEP, MODES, roundAmmo, type Rules } from './modes';
 import { makeSchedule } from './ammo';
 import { AMMO, CRUSH, type Ammo } from './ammo';
 import { MAX_PULL, Range, STEP, TAPE, type Repair } from './range';
@@ -16,6 +16,7 @@ export function goodTap(r: Range): void {
   const pl = r.plushTargets();
   const go = f.ammo === 'jacks' ? a.x > -3.5
     : f.ammo === 'top' ? pl.some(p => Math.abs(a.x - p.x) < 0.35 && a.y > p.y + 0.5)
+    : f.ammo === 'popper' ? pl.some(p => Math.hypot(a.x - p.x, a.y - p.y) < 0.9)
     : pl.some(p => Math.hypot(a.x - p.x, a.y - p.y) < 1.4);
   if (go) r.ability();
 }
@@ -41,6 +42,12 @@ export function sweep(fort: Piece[], ammo: Ammo, repair?: Repair, degs = range(1
   const out: ShotResult[] = [];
   for (const d of degs) for (const p of powers) out.push(shotAt(fort, ammo, d, p, goodTap, repair));
   return out;
+}
+/** Test forts for sweeps: what the bot builds from a seeded toy box, so they follow the current rules. */
+export function testFort(i: number): Piece[] {
+  let seed = 7919 * (i + 1); const rng = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  for (let tries = 0; tries < 5; tries++) { const f = botFort(makeDraw(rng, 18), rng); if (f) return f; }
+  throw new Error('no fort');
 }
 /** The strongest tape use: every plushie taped to the piece it stands on (in blueprint coordinates). */
 export function tapePlushies(fort: Piece[]): Repair {
@@ -71,8 +78,8 @@ export interface MatchResult { standing: [number, number]; destroyed: [number, n
 
 /** One Siege (or a Best of Three round) between two bot forts from the same draw: blue shoots, then green, each volley. */
 export function simMatch(rules: Rules, rng: () => number): MatchResult | null {
-  const mode = MODES[rules], draw = makeDraw(rng), budget = mode.budgets[0];
-  const forts = [botFort(draw, budget, rng), botFort(draw, budget, rng)];
+  const mode = MODES[rules], draw = makeDraw(rng, mode.boxes[0]);
+  const forts = [botFort(draw, rng), botFort(draw, rng)];
   if (!forts[0] || !forts[1]) return null;
   const ranges = [new Range(forts[0], 'blue'), new Range(forts[1], 'green')];
   for (const r of ranges) r.settle(3);
@@ -88,7 +95,7 @@ export function simMatch(rules: Rules, rng: () => number): MatchResult | null {
       }
       for (let i = 0; i < 180 && !target.quiet(); i++) for (const r of ranges) r.tick(STEP, lava);
     }
-    if (mode.lava === 'volley' && v < mode.volleys) { lava++; for (let i = 0; i < 60; i++) for (const r of ranges) r.tick(STEP, lava); }
+    if (mode.lava === 'volley' && v < mode.volleys) { lava += LAVA_STEP; for (let i = 0; i < 60; i++) for (const r of ranges) r.tick(STEP, lava); }
     if (ranges.some(r => r.standing() === 0)) break;
   }
   const st: [number, number] = [ranges[0].standing(), ranges[1].standing()], d: [number, number] = [ranges[1].destruction(), ranges[0].destruction()];

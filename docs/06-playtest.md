@@ -72,3 +72,44 @@ One section per session: what was played, what the player said, what it means fo
 - **Moments:** what made someone laugh, groan or protest? Name the game number.
 - **Stuck:** where did someone not know what to do, or ask "why"?
 - From the log, not from memory: build times, unused pieces, how matches end (knockout or tiebreak), shot accuracy, match length.
+
+## Session 3: Thomas, the MVP (2026-10-21)
+
+### What Thomas said
+1. The plushie sprites are bigger than their hitboxes; the hitbox should reach further up.
+2. Building is repetitive, and the budget doesn't make it fun. Drop the budget and randomise the available parts each round instead. The pieces could also get sprites closer to the concept art.
+3. The water balloon isn't fun. Instead something like a bomb: those rubber half-balls you turn inside out, which pop and bounce off in a random direction.
+4. Two cells of minimum height is still too high: 90% of the pieces still go into propping the plushies up. Make it one. The cones above the plushies may be too restrictive; tone them down a little, and he'll see whether cheat castles get too easy.
+
+### What changed (same day)
+| Feedback | Change |
+|---|---|
+| Hitboxes too small | A plushie's body is 1 × 1.4 cells (was 1 × 1), and its sprite is drawn to fit, with only ears and tips above it. A plushie is out when its **lowest point** touches the rug or the floor, however it's turned, instead of when its centre is low. Its weight stays the same (twice a block) |
+| No budget, a random box | **The budget is gone: everything in the box may be used.** The box changes every match (and every Best of Three round): a random 4–6 of the 8 kinds, 18 pieces in the Siege, 15 in the race, 10/14/18 in Best of Three. It always holds enough to lift three plushies. The tray shows only the kinds this box has. Repairs are no longer paid for: up to 3 pieces from what's left, plus 3 tapes |
+| Piece sprites | Every piece is illustrated in the concept art's style (`docs/concept/pieces/`, cut by `dev/art/make_pieces.py` to the exact proportions of each physics box). The domino is now 0.75 cells wide, the shape of a real domino and of its drawing (was 0.5) |
+| Water balloon → popper | **The popper:** a rubber half-ball. It lands, sits for 0.5–1 s, then pops: a strong shove (with some lift) to everything within 2.4 cells, and it jumps off at speed in a random direction (up to 70° either side of straight up). A tap pops it early. The random direction is seeded by the shot, so replays repeat it. The balloon stays in the code so old games still replay |
+| Plushies too high | **Minimum height 1 cell.** To keep that from being a trap, **the lava rises half a cell at a time** (to 0.5, then 1 in the Siege; every 30 s in the race). A whole cell per volley would have drowned every minimum-height plushie before the last volley |
+| Cones too strict | **The open-sky V is 20° from vertical (was 30°) and starts at the plushie's waist (was its feet)**, so pieces may come up to a plushie's waist. Watch for cheat castles: plushies walled in up to the waist, reachable only from above |
+
+### What the sims say about the new rules
+The bot now builds low forts (plushies at 1–3 cells), and attack and defence have swapped places:
+- **Sweep:** of 225 test shots at bot-built forts, these take out at least one plushie. Before this session the old hand-made forts gave 78–87 for each type.
+
+| Marble | Jacks | Spinning top | Popper |
+|---|---|---|---|
+| 34 | 31 | 41 | 22 |
+
+- **20 bot-vs-bot Sieges:**
+  - No fort was wiped, and every match reached volley 3 (before: 80% wipes, 47% early ends). That's the three-volley arc.
+  - The catch: 35% went to the tiebreak, with on average 1.8 of 3 plushies standing per fort.
+  - Lighter plushies (half the weight) gave 30% wipes but even more tiebreaks (45%), so the weight stays.
+- **The popper is a fort-wrecker, not a sniper.** It takes out fewer plushies than the others but knocks pieces around as much. Its job is chaos inside the fort; Thomas's games will say whether it's fun.
+- **Replays stay exact:**
+  - The popper's random jump is seeded by the shot.
+  - A crush's slow motion no longer depends on whether the lava already took the plushie; in the race that had made replays drift.
+  - The race replay stops at each fort's next shot even when the log interleaves both forts.
+
+### Open questions for the next sessions
+- **Cheat castles:** does walling plushies in up to the waist become the dominant strategy?
+- **Tiebreaks:** do they now decide too many matches? If so, a fourth volley or more shots per volley, rather than weaker forts.
+- **Building:** does the random box make it less repetitive? Which kinds never get used (`/games`, "What goes into forts")?

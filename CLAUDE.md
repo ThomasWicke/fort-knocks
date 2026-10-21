@@ -16,7 +16,10 @@ A live 1v1 physics duel for phones, close to classic Angry Birds. Two siblings b
 - **Code:** pieces, crayon effects, UI and anything else that moves or breaks.
 - **Illustrated sprites:** the plushies (and later the room backdrop), in the "drawn, but detailed" key-art style. The style reference is `docs/concept/brand/icon-7-fall-blue.jpg`.
 - **Generating art:** Claude runs the Codex CLI on Thomas's ChatGPT login, in isolated runs (`codex exec -i <reference> --ignore-user-config --ephemeral --sandbox read-only`, from an empty scratch folder). Codex saves images to `~/.codex/generated_images/<session>/`.
-- **Sprite cutouts:** sprites are generated on a magenta (#FF00FF) background and cut out offline (hue key plus despill). The magenta sources are in `docs/concept/sprites/`, the cutouts in `dev/style-frame/sprites/`.
+- **Sprite cutouts:** sprites are generated on a magenta (#FF00FF) background and cut out offline (hue key plus despill), with the ComfyUI venv's Python (`../../local-image-gen/ComfyUI/venv/bin/python`).
+  - `dev/art/make_art.py`: room, rug and plushies.
+  - `dev/art/make_pieces.py`: the piece sprites, cut to each physics box's exact proportions.
+  - Sources: `docs/concept/game-art/`, `docs/concept/pieces/`, `docs/concept/sprites/`. Results: `client/public/art/`.
 
 ## Commands
 ```bash

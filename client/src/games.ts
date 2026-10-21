@@ -4,8 +4,8 @@
 import '@fontsource/baloo-2/latin-500.css';
 import '@fontsource/baloo-2/latin-700.css';
 import '@fontsource/lilita-one/latin-400.css';
-import { RUG_W, TRAY, TRAY_ORDER, priceOf, trayKindOf, type Piece, type Plushie, type TrayKind } from './fort';
-import { P, drawPiece, drawPlush } from './draw';
+import { RUG_W, TRAY_ORDER, trayKindOf, type Piece, type Plushie, type TrayKind } from './fort';
+import { P, drawPiece, drawPlush, preloadPieces } from './draw';
 import { artReady, drawPlushSprite, drawRug } from './art';
 import { AMMO } from './ammo';
 import { MODES } from './modes';
@@ -53,7 +53,7 @@ function card(row: Row): HTMLElement {
     const f = document.createElement('div'); f.className = 'fort';
     const built = side.fort;
     const bits = side.bot ? [`bot fort ${(side.botFort ?? 0) + 1}`]
-      : [side.buildMs !== undefined ? `built in ${clock(side.buildMs)}` : 'not built', side.tests ? `Test ×${side.tests}` : '', built ? `${spent(built)} of 30 spent` : ''];
+      : [side.buildMs !== undefined ? `built in ${clock(side.buildMs)}` : 'not built', side.tests ? `Test ×${side.tests}` : '', built ? `${built.filter(p => p.type !== 'plush').length} pieces` : ''];
     if (side.drowned?.length) bits.push(`lava took ${side.drowned.map(p => NAME[p]).join(', ')}`);
     f.innerHTML = `<div class="who ${side.team}">${esc(side.name)}</div>${built ? '<canvas></canvas>' : ''}<div class="meta">${bits.filter(Boolean).join(' · ')}</div>`;
     forts.append(f);
@@ -90,7 +90,7 @@ function drawFort(cv: HTMLCanvasElement, fort: Piece[], team: Team): void {
   }
   for (const p of fort) {
     c.save(); c.translate(ox + (p.x + p.w / 2) * k, oy - (p.y + p.h / 2) * k);
-    if (p.type === 'plush') { if (!drawPlushSprite(c, p.plush!, team, k, false)) drawPlush(c, p.plush!, p.w * k, p.h * k, false, team === 'blue' ? P.blue : P.green); }
+    if (p.type === 'plush') { if (!drawPlushSprite(c, p.plush!, team, k, false, p.h)) drawPlush(c, p.plush!, p.w * k, p.h * k, false, team === 'blue' ? P.blue : P.green); }
     else drawPiece(c, p, k);
     c.restore();
   }
@@ -107,16 +107,16 @@ function renderUsage(): void {
   usage.hidden = false;
   usage.innerHTML = `<h2>What goes into forts</h2>
     <div class="meta">Across the ${forts.length} fort${forts.length === 1 ? '' : 's'} people built in the games below (bot forts left out): how much of each piece the toy box held, and how much of it was used.</div>
-    <div class="tablewrap"><table><tr><th>Piece</th><th>Price</th><th>Per fort</th><th>Used of what was there</th><th></th></tr>
-    ${rows.map(r => `<tr><td>${KIND[r.k]}</td><td>${TRAY[r.k].price}</td><td>${(r.used / forts.length).toFixed(1)}</td>
+    <div class="tablewrap"><table><tr><th>Piece</th><th>In the box, per fort</th><th>Used, per fort</th><th>Used of what was there</th><th></th></tr>
+    ${rows.map(r => `<tr><td>${KIND[r.k]}</td><td>${(r.inBox / forts.length).toFixed(1)}</td><td>${(r.used / forts.length).toFixed(1)}</td>
       <td><div class="bar"><i style="width:${Math.min(100, Math.round(r.share * 100))}%"></i></div></td><td>${Math.round(r.share * 100)}%</td></tr>`).join('')}
     </table></div>`;
 }
 
 const clock = (ms: number) => { const s = Math.round(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
-const spent = (fort: Piece[]) => fort.reduce((n, p) => n + priceOf(p), 0);
 function device(ua: string): string {
   return /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android' : /Macintosh/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'other device';
 }
 
-void artReady().then(() => load());
+preloadPieces();
+void artReady().then(() => new Promise(r => setTimeout(r, 300))).then(() => load());
