@@ -10,12 +10,14 @@ import '@fontsource/lilita-one/latin-400.css';
 import '@fontsource/gochi-hand/latin-400.css';
 import { initPhysics } from './physics';
 import wasmUrl from '../../node_modules/box2d3-wasm/build/dist/es/compat/Box2D.compat.wasm?url';
-import { BOT_FORTS, makeDraw, type Draw, type Piece } from './fort';
+import { BOT_FORTS, makeDraw, priceOf, type Draw, type Piece } from './fort';
 import { Builder } from './build';
-import { BOOK, Cam, Puppet, Range, aimAt, drawScene, MAX_PULL, type Pull, type Snap } from './range';
+import { BOOK, Cam, MAX_PULL, Puppet, Range, TAPE, drawScene, patchPiece, type Pull, type Repair, type Snap } from './range';
 import { HAND } from './draw';
 import { AMMO, drawAmmo, makeSchedule, type Ammo } from './ammo';
 import { MODES, RULES_ORDER, roundAmmo, savedRules, saveRules, type Rules } from './modes';
+import { ALLOWANCE, REPAIR_SECS, RepairScreen, seamAt, type RepairView } from './repair';
+import { botAim as aimBot, botFort, botTap } from './bot';
 import { Recorder, deviceInfo, type GameLog, type ShotLog, type SideLog, type Team } from './record';
 import { RoomConn, newCode, playerId } from './party';
 import { SEAT_NAME, SEAT_TEAM, type MatchSetup, type Phase, type S2C, type Seat, type SeatInfo } from '../../party/protocol';
@@ -31,7 +33,11 @@ const ctx = canvas.getContext('2d')!;
 const barLeft = document.getElementById('bar-left')!, barRight = document.getElementById('bar-right')!;
 const overlay = document.getElementById('overlay')!;
 
-interface Side { team: Team; name: string; bot: boolean; fort: Piece[]; range: Range | null }
+interface Side {
+  team: Team; name: string; bot: boolean; fort: Piece[]; range: Range | null;
+  /** What's left for repairs: the draw's unused pieces and the reserve (unspent budget, plus 3 per repair). */
+  left: Draw; reserve: number;
+}
 interface Match {
   mode: 'pass' | 'bot' | 'online'; draw: Draw; sides: [Side, Side];
   volley: number; shooter: 0 | 1; shotsLeft: number; lava: number; lavaShown: number; started: number; busy: boolean;
@@ -49,8 +55,9 @@ interface Match {
 }
 interface Race { start: number; lastFire: number; next: number; botNext: number; botAt: number; botHand: Ammo[]; over: boolean; footsteps: boolean }
 const spec = (m: Match) => MODES[m.rules];
-let screen: 'menu' | 'lobby' | 'build' | 'siege' | 'result' | 'watch' = 'menu';
+let screen: 'menu' | 'lobby' | 'build' | 'siege' | 'repair' | 'result' | 'watch' = 'menu';
 let match: Match | null = null, builder: Builder | null = null, buildDone: (() => void) | null = null;
+let repairing: RepairScreen | null = null, repairDone: (() => void) | null = null, repairStart = 0;
 let clock = 0, boil = 0, cssW = 0, cssH = 0, sawHowTo = false, buildSecs = 90;
 const cam = new Cam(), tally: Record<Team, number> = { blue: 0, green: 0 };
 let pull: Pull | null = null, pointerId = -1, botPull: Pull | null = null;
@@ -80,9 +87,9 @@ function menu(): void {
 function newMatch(mode: 'pass' | 'bot', rules: Rules, round = 1, wins: Record<Team, number> = { blue: 0, green: 0 }): void {
   quitMatch(); leaveRoom();
   timers.length = 0;
-  const blue: Side = { team: 'blue', name: mode === 'bot' ? 'You' : 'Blue', bot: false, fort: [], range: null };
-  const green: Side = { team: 'green', name: mode === 'bot' ? 'Bot' : 'Green', bot: mode === 'bot', fort: [], range: null };
   const draw = makeDraw(rng), schedule = scheduleFor(rules, round);
+  const blue: Side = { team: 'blue', name: mode === 'bot' ? 'You' : 'Blue', bot: false, fort: [], range: null, left: { ...draw }, reserve: 0 };
+  const green: Side = { team: 'green', name: mode === 'bot' ? 'Bot' : 'Green', bot: mode === 'bot', fort: [], range: null, left: { ...draw }, reserve: 0 };
   const log: GameLog = {
     v: 1, app: __APP__, mode, rules, round, started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw, schedule,
     sides: [{ team: 'blue', name: blue.name, bot: false, fort: null }, { team: 'green', name: green.name, bot: green.bot, fort: null }],
@@ -115,16 +122,18 @@ function build(i: 0 | 1): void {
   layout();
   buildDone = () => {
     const b = builder!, sl = m.rec.log.sides[i];
-    side.fort = b.pieces.map(p => ({ ...p })); builder = null; buildDone = null;
+    side.fort = b.pieces.map(p => ({ ...p })); side.left = { ...b.left }; side.reserve = b.budgetLeft; builder = null; buildDone = null;
     Object.assign(sl, { fort: side.fort, buildMs: Math.round(clock - b.started), tests: b.tests });
     if (m.mode === 'online') return sendFort(side.fort, Math.round(clock - b.started), b.tests);
     if (i === 0 && m.mode === 'pass') {
       m.rec.log.summary = 'Green building'; save();
       passThen('Green builds', 'Blue, look away while Green builds. Same toy box, same budget.', () => build(1));
     } else if (i === 0) {
-      const k = Math.floor(rng() * BOT_FORTS.length);
-      m.sides[1].fort = BOT_FORTS[k].map(p => ({ ...p }));
-      Object.assign(m.rec.log.sides[1], { fort: m.sides[1].fort, botFort: k });
+      // the bot builds from the same draw and budget; the hand-made forts are only a fallback
+      const budget = b.budget, built = botFort(m.draw, budget, rng), k = Math.floor(rng() * BOT_FORTS.length);
+      m.sides[1].fort = built ?? BOT_FORTS[k].map(p => ({ ...p }));
+      m.sides[1].reserve = budget - m.sides[1].fort.reduce((n, p) => n + priceOf(p), 0);
+      Object.assign(m.rec.log.sides[1], { fort: m.sides[1].fort, botFort: built ? undefined : k });
       startSiege();
     } else startSiege();
   };
@@ -138,7 +147,8 @@ function build(i: 0 | 1): void {
         <li>Your three plushies stand <b>above the dashed line</b>, with clear sky above them (the dotted V).</li>
         <li>Put anything anywhere. If a piece breaks a rule it turns red and says why; fix those before you're ready.</li>
         <li><b>Test</b> switches the physics on. Whatever falls, falls.</li>
-        <li>The lava rises after volleys 1 and 2, so plushies standing low drown.</li>
+        ${m.rules === 'siege' ? '<li>The lava rises after volleys 1 and 2, so plushies standing low drown. Between volleys you can patch and tape your fort.</li>'
+          : m.rules === 'race' ? '<li>The lava rises every 30 seconds, so plushies standing low drown.</li>' : '<li>Each round is a new fort with a bigger budget. Best of three.</li>'}
       </ul>
       <div class="row"><button id="h-ok">Got it</button></div>`);
     on('h-ok', hide);
@@ -220,27 +230,71 @@ function endTurn(): void {
     if (wiped || m.volley >= sp.volleys) return result();
     m.volley++; m.shooter = 0;
     save();
-    if (m.mode === 'pass') passThen('Blue shoots', `${volleyName(m)}: ${ammoPair(m, m.volley)}. Hand the phone to Blue.`, beginTurn);
-    else beginTurn();
+    const go = () => (m.mode === 'pass' ? passThen('Blue shoots', `${volleyName(m)}: ${ammoPair(m, m.volley)}. Hand the phone to Blue.`, beginTurn) : beginTurn());
+    if (m.rules === 'siege') localRepairs(go); else go();
   });
 }
-/** Where the bot aims: a random standing plushie, with human-sized errors. The top is lobbed high so it arrives
- *  above its target and drills down; the rest come in at a middle angle. */
-function botAim(range: Range, ammo: Ammo): { pull: Pull; at: { x: number; y: number } } {
-  const aims = range.plushTargets(), t = aims.length ? aims[Math.floor(rng() * aims.length)] : { x: 5, y: 3 };
-  const [lo, span] = ammo === 'top' ? [56, 14] : [32, 26], aimY = ammo === 'top' ? t.y + 1.6 : t.y;
-  let p: Pull | null = null;
-  for (let tries = 0; tries < 8 && !p; tries++) p = aimAt(t.x + (rng() - 0.5) * 0.6, aimY + (rng() - 0.3) * 0.6, lo + rng() * span);
-  p ??= { x: 1.4, y: 1.0 };
-  // a decent but human bot: up to 7% of power and 3.5° of angle off (it wiped a fort in four shots at 4% and 1.7°)
-  const ang = Math.atan2(p.y, p.x) + (rng() - 0.5) * 0.12, mag = Math.min(MAX_PULL, Math.hypot(p.x, p.y) * (1 + (rng() - 0.5) * 0.14));
-  return { pull: { x: Math.cos(ang) * mag, y: Math.sin(ang) * mag }, at: { x: t.x, y: t.y } };
+
+// ---------- the Siege's repair, between volleys ----------
+// Both repair their own fort out of the other's sight; the repairs land together when the next volley starts.
+function localRepairs(next: () => void): void {
+  const m = match!, plan: (Repair | null)[] = [null, null];
+  const land = () => {
+    m.sides.forEach((s, i) => { if (plan[i] && (plan[i]!.patches.length || plan[i]!.tapes.length)) s.range!.repair(plan[i]!); });
+    screen = 'siege'; hide(); layout();
+    save(); next();
+  };
+  if (m.mode === 'pass') {
+    passThen('Blue repairs', 'Green, look away while Blue repairs.', () => openRepair(0, r => {
+      plan[0] = r;
+      passThen('Green repairs', 'Blue, look away while Green repairs.', () => openRepair(1, r2 => { plan[1] = r2; land(); }));
+    }));
+  } else openRepair(0, r => { plan[0] = r; plan[1] = botRepair(m.sides[1]); land(); });
+}
+/** The repair screen for one side's fort. view: the fort as it stands (the live range, or online the streamed picture). */
+function openRepair(i: 0 | 1, done: (r: Repair) => void, view?: () => RepairView | null): void {
+  const m = match!, side = m.sides[i];
+  side.reserve += ALLOWANCE;
+  screen = 'repair'; hide();
+  repairing = new RepairScreen(side.team, side.left, side.reserve, view ?? (() => ({ snap: side.range!.snap(m.lavaShown), pieces: side.range!.entries.map(e => e.piece) })));
+  repairStart = clock;
+  layout();
+  repairDone = () => {
+    const rs = repairing!, r = rs.result();
+    side.reserve -= rs.spent;
+    for (const p of r.patches) side.left[p.kind]--;
+    repairing = null; repairDone = null; barRight.dataset.key = '';
+    done(r);
+  };
+  repairBar();
+}
+function repairBar(): void {
+  const rs = repairing, m = match; if (!rs || !m) return;
+  const left = Math.max(0, Math.ceil(REPAIR_SECS - (clock - repairStart) / 1000));
+  if (left === 0) { repairDone?.(); return; }
+  const side = m.sides.find(s => s.team === rs.team)!;
+  const text = `${tag()}${side.name === 'You' ? 'Repair your fort' : `${side.name} repairs`} · ${left} s · reserve ${rs.money} · tape ${rs.tapes.length}/${TAPE.perRepair}`;
+  const key = `${text}|repair`;
+  if (barRight.dataset.key === key) return;
+  barRight.dataset.key = key;
+  bar(text, [['Done', () => repairDone?.()]]);
+}
+/** The bot's repair: tape each standing plushie to what it stands on, while the reserve lasts. */
+function botRepair(side: Side): Repair {
+  const r = side.range!, view = { snap: r.snap(0), pieces: r.entries.map(e => e.piece) }, tapes: Repair['tapes'] = [];
+  side.reserve += ALLOWANCE;
+  for (const e of r.entries) {
+    if (e.piece.type !== 'plush' || e.out || tapes.length >= TAPE.perRepair || side.reserve < TAPE.cost) continue;
+    const t = r.world.transform(e.id), pair = seamAt(view, t.x, t.y - 0.5);
+    if (pair && pair.includes(r.entries.indexOf(e))) { tapes.push([pair[0], pair[1], t.x, t.y - 0.5]); side.reserve -= TAPE.cost; }
+  }
+  return { patches: [], tapes };
 }
 function botShot(): void {
   const m = match!, range = target();
   if (screen !== 'siege' || range.state !== 'aim' || m.shotsLeft <= 0) return;
   m.loaded = m.hand[Math.floor(rng() * m.hand.length)];
-  const { pull: final, at } = botAim(range, m.loaded), t0 = clock;
+  const { pull: final, at } = aimBot(range, m.loaded, rng), t0 = clock;
   const pullStep = () => {   // the bot pulls back visibly before letting go
     const f = Math.min(1, (clock - t0) / 700);
     botPull = { x: final.x * f, y: final.y * f };
@@ -248,16 +302,6 @@ function botShot(): void {
   };
   pullStep();
 }
-/** The bot's tap: jacks scatter just before the fort, the top drills when it's over its target, the balloon bursts close to it. */
-function botTap(range: Range, plan: { x: number; y: number } | null): void {
-  const a = range.ammoAt(), f = range.flight;
-  if (!plan || !a || !f || f.tapped || !AMMO[f.ammo].tap) return;
-  const go = f.ammo === 'jacks' ? a.x > plan.x - 4.5
-    : f.ammo === 'top' ? Math.abs(a.x - plan.x) < 0.35 && a.y > plan.y + 0.5
-    : Math.hypot(a.x - plan.x, a.y - plan.y) < 1.4;
-  if (go) range.ability();
-}
-
 // ---------- Before Mum Comes In: both shoot at once ----------
 // No turns: you fire whenever you've reloaded, at the ammo the schedule deals you (on a loop), while the other side does
 // the same to your fort. The lava rises every 30 s, Mum's footsteps come 30 s before the end, and the door ends it.
@@ -280,7 +324,7 @@ function raceTick(): void {
   if (m.mode === 'bot') {   // the bot fires on its own reload at your fort, which keeps ticking in the background
     const mine = m.sides[0].range!;
     if (clock >= r.botAt && mine.state === 'aim') {
-      const flat = m.schedule.flat(), ammo = flat[r.botNext++ % flat.length], { pull: p, at } = botAim(mine, ammo);
+      const flat = m.schedule.flat(), ammo = flat[r.botNext++ % flat.length], { pull: p, at } = aimBot(mine, ammo, rng);
       if (shootAt(mine, 'green', p, ammo)) raceBotPlan = at;
       r.botAt = clock + sp.reload! * 1000 + 500 + rng() * 2000;
     }
@@ -368,6 +412,8 @@ const tag = (): string => (online?.setup?.game ? `#${online.setup.game} · ` : m
 function save(): void {
   const m = match; if (!m) return;
   m.sides.forEach((s, i) => { if (s.range) m.rec.log.sides[i].drowned = s.range.drowned; });
+  const repairs = m.sides.flatMap(s => s.range?.repairs.map(r => ({ by: s.team, ...r })) ?? []);
+  if (repairs.length) m.rec.log.repairs = repairs;
   if (m.rec.log.status === 'siege') { const st = standing(); m.rec.log.summary = `Volley ${m.volley} · ${m.sides[0].name} ${st.blue} – ${m.sides[1].name} ${st.green}`; }
   void m.rec.save();
 }
@@ -381,6 +427,8 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 const LEAD = 60, PULL_STEPS = 42;   // steps of quiet fort before each replayed shot; the pull animates over the last 42
 interface Watching {
   id: number | null; log: GameLog; ranges: Record<Team, Range>; i: number; shown: Team;
+  /** Repairs still to land, per fort, in step order. */
+  pending: Record<Team, ({ step: number } & Repair)[]>;
   phase: 'lead' | 'flight' | 'after' | 'end'; wait: number; drift: number | null; pull: Pull | null; lava: number; lavaShown: number;
 }
 let watching: Watching | null = null;
@@ -406,7 +454,10 @@ function watch(log: GameLog, id: number | null): void {
   }
   const ranges = { blue: new Range(log.sides[0].fort!, 'blue'), green: new Range(log.sides[1].fort!, 'green') };
   ranges.blue.settle(3); ranges.green.settle(3);
-  watching = { id, log, ranges, i: -1, shown: 'green', phase: 'lead', wait: 0, drift: null, pull: null, lava: 0, lavaShown: 0 };
+  const pending = { blue: [] as ({ step: number } & Repair)[], green: [] as ({ step: number } & Repair)[] };
+  for (const r of log.repairs ?? []) pending[r.by].push(r);
+  for (const t of ['blue', 'green'] as Team[]) pending[t].sort((a, b) => a.step - b.step);
+  watching = { id, log, ranges, pending, i: -1, shown: 'green', phase: 'lead', wait: 0, drift: null, pull: null, lava: 0, lavaShown: 0 };
   screen = 'watch'; hide(); layout();
   nextShot();
 }
@@ -416,7 +467,8 @@ function nextShot(): void {
   const s = w.log.shots[w.i];
   if (!s) return endWatch();
   w.shown = other(s.by); w.lava = s.volley - 1; w.phase = 'lead'; w.wait = 0;
-  const r = w.ranges[w.shown];
+  const r = w.ranges[w.shown], pend = w.pending[w.shown];
+  while (pend.length && pend[0].step <= s.step) { const rp = pend.shift()!; r.stepTo(Math.max(r.steps, rp.step), w.lava); r.repair(rp); }   // repairs land where they did
   r.stepTo(Math.max(r.steps, s.step - LEAD), w.lava);
   watchBar();
 }
@@ -521,7 +573,16 @@ function onRoom(m: S2C): void {
       o.note = `${SEAT_NAME[them()]} fired the ${AMMO[m.ammo as Ammo].name.toLowerCase()}`; onlineBar();
       later(2500, () => { if (online === o && o.note.includes('fired')) { o.note = ''; onlineBar(); } });
       return;
-    case 'volley': if (match) { match.volley = m.volley; match.lava = m.volley - 1; beginOnlineTurn([]); } return;
+    case 'volley': if (match) {
+      const mt = match, t = them();
+      mt.volley = m.volley; mt.lava = m.volley - 1;
+      // the other player's repair lands on the fort this phone simulates; this phone's own repair joins its picture
+      if (m.repair) mt.sides[t].range?.repair(m.repair as Repair);
+      if (m.mine && o.puppet) for (const p of (m.mine as Repair).patches) o.puppet.pieces.push(patchPiece(p, o.puppet.pieces.length));
+      repairing = null; repairDone = null; screen = 'siege'; hide(); layout();
+      beginOnlineTurn([]);
+    } return;
+    case 'repair': return onlineRepair(m.volley);
     case 'rise': return onlineRise(m.volley);
     case 'result': return onlineResult(m);
   }
@@ -548,8 +609,8 @@ function lobby(): void {
 function onlineMatch(setup: MatchSetup): void {
   const o = online!, me = o.seat!;
   timers.length = 0;
-  const sides = ([0, 1] as Seat[]).map(i => ({ team: SEAT_TEAM[i], name: i === me ? 'You' : SEAT_NAME[i], bot: false, fort: [] as Piece[], range: null })) as [Side, Side];
   const draw = setup.draw as Draw, schedule = setup.schedule as Ammo[][];
+  const sides = ([0, 1] as Seat[]).map((i): Side => ({ team: SEAT_TEAM[i], name: i === me ? 'You' : SEAT_NAME[i], bot: false, fort: [], range: null, left: { ...draw }, reserve: 0 })) as [Side, Side];
   const log: GameLog = { v: 1, app: __APP__, mode: 'online', started: new Date().toISOString(), device: deviceInfo(), status: 'building', draw, schedule,
     sides: sides.map(x => ({ team: x.team, name: x.name, bot: false, fort: null })) as [SideLog, SideLog], shots: [], volleys: [], winner: null, summary: '' };
   const rules = (setup.rules in MODES ? setup.rules : 'siege') as Rules;
@@ -602,11 +663,22 @@ function beginOnlineTurn(fired: string[]): void {
   if (!hand.length) onlineDone();
   onlineBar();
 }
+/** The Siege's repair, online: your fort is the streamed picture; the plan goes to the room, and on to the other phone. */
+function onlineRepair(volley: number): void {
+  const o = online!, m = match;
+  if (!m || o.seat === null) return;
+  const me = o.seat;
+  openRepair(me, r => {
+    o.conn.send({ t: 'repaired', volley, repair: r });
+    screen = 'repair'; repairing = null; bar(`${tag()}Room ${o.code}`, [['Leave', menu]]);
+    show(`<h1>Repaired</h1><p>Waiting for ${SEAT_NAME[them()]} to finish repairing…</p>`);
+  }, () => { const p = o.puppet, s = p?.view(performance.now()); return p && s ? { snap: s, pieces: p.pieces } : null; });
+}
 /** This phone's volley is over: report the target, then watch your own fort take the other player's shots. */
 function onlineDone(): void {
   const m = match!, o = online!, r = target();
   const shots = m.race ? m.rec.log.shots : m.rec.log.shots.filter(x => x.volley === m.volley);
-  o.conn.send({ t: 'done', volley: m.volley, standing: r.standing(), destroyed: r.destruction(), shots });
+  o.conn.send({ t: 'done', volley: m.volley, standing: r.standing(), destroyed: r.destruction(), shots, repairs: r.repairs });
   m.busy = true; o.view = 'own'; onlineBar();
 }
 function onlineRise(volley: number): void {
@@ -639,9 +711,9 @@ function onlineResult(res: Extract<S2C, { t: 'result' }>): void {
   on('r-menu', menu);
 }
 /** Stream the target to its owner: 15 times a second while anything moves, once a second when it's quiet. */
-function streamSnap(): void {
+function streamSnap(anyScreen = false): void {
   const o = online, m = match;
-  if (!o || !m || screen !== 'siege') return;
+  if (!o || !m || (screen !== 'siege' && !anyScreen) || !m.sides[them()].range) return;
   const r = target(), now = performance.now();
   const live = r.state === 'flight' || !r.quiet() || Math.abs(m.lava - m.lavaShown) > 0.001;
   if (now - o.lastSnap < (live ? 66 : 1000)) return;
@@ -653,7 +725,7 @@ function onlineBar(extra?: string): void {
   const o = online, m = match;
   if (!o || !m || screen !== 'siege') return;
   if (extra) o.note = extra;
-  const t = them(), own = o.puppet?.cur, mine = own ? o.puppet!.pieces.filter((p, i) => p.type === 'plush' && !(own.p[i][3] & 1)).length : 3;
+  const t = them(), own = o.puppet?.cur, mine = own ? o.puppet!.pieces.filter((p, i) => p.type === 'plush' && own.p[i] && !(own.p[i][3] & 1)).length : 3;
   const tap = AMMO[m.loaded].tap;
   const turn = m.race && reloading(m) && !m.busy ? 'Reloading…' : !m.busy && m.shotsLeft > 0 ? `Your shot · ${AMMO[m.loaded].name}${tap ? ` (tap in flight: ${tap})` : ''}` : o.view === 'own' ? 'Your fort' : 'Waiting';
   const away = o.seats[t] && !o.seats[t].here ? ` · ${SEAT_NAME[t]} is offline` : '';
@@ -683,6 +755,7 @@ function on(id: string, fn: () => void): void { document.getElementById(id)!.onc
 canvas.addEventListener('pointerdown', e => {
   if (pointerId !== -1) return;
   if (screen === 'build' && builder) { pointerId = e.pointerId; canvas.setPointerCapture(e.pointerId); builder.down(e.offsetX, e.offsetY); return; }
+  if (screen === 'repair' && repairing) { repairing.tap(e.offsetX, e.offsetY); repairBar(); return; }
   if (screen !== 'siege' || !match || match.busy || match.sides[match.shooter].bot || (match.mode === 'online' && online?.view === 'own')) return;
   if (target().state === 'flight') { target().ability(); return; }   // a tap anywhere triggers the ammo's ability
   if (match.shotsLeft <= 0 || target().state !== 'aim' || reloading(match) || match.race?.over) return;
@@ -727,11 +800,17 @@ function layout(): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   cam.fit(VIEW, { x: 0, y: BAR, w: cssW, h: cssH - BAR });
   builder?.layout(cssW, cssH, BAR);
+  repairing?.layout(cssW, cssH, BAR);
 }
 function tick(dt: number): void {
   clock += dt * 1000; boil += dt * 3;
   for (let i = timers.length - 1; i >= 0; i--) if (timers[i].at <= clock) { const t = timers.splice(i, 1)[0]; t.fn(); }
   if (screen === 'build') { builder?.tick(dt); buildBar(); }
+  if (screen === 'repair') {   // the forts keep settling while their owners repair
+    for (const s of match?.sides ?? []) s.range?.tick(dt, match!.lavaShown);
+    if (match?.mode === 'online') streamSnap(true);
+    repairBar();
+  }
   if (screen === 'siege' && match) {
     match.lavaShown += Math.sign(match.lava - match.lavaShown) * Math.min(Math.abs(match.lava - match.lavaShown), dt * 0.8);
     for (const s of match.sides) s.range?.tick(dt, match.lavaShown);
@@ -744,6 +823,7 @@ function tick(dt: number): void {
 function draw(): void {
   const o = { boil, launcher: true, w: cssW, h: cssH };
   if (screen === 'build' && builder) builder.draw(ctx, boil);
+  else if (screen === 'repair' && repairing) repairing.draw(ctx, boil);
   else if (screen === 'siege' && match?.mode === 'online' && online?.view === 'own') {
     const p = online.puppet, s = p?.view(performance.now());
     if (p && s) drawScene(ctx, cam, p.pieces, p.team, s, { ...o, pull: null, lava: s.lava, loaded: null });
@@ -815,7 +895,13 @@ if (import.meta.env.DEV || location.hostname === 'localhost') Object.assign(wind
   fire: (x: number, y: number, ammo?: Ammo) => { if (screen === 'siege') { if (ammo && match!.hand.includes(ammo)) match!.loaded = ammo; shoot({ x, y }); } },
   tap: () => target().ability(),
   // balance sweeps (sim.ts): every ammo type at a bot fort over an angle × power grid
-  sweep: async (fort: number, ammo: Ammo) => { const sim = await import('./sim'); return sim.summarise(sim.sweep(BOT_FORTS[fort], ammo)); },
+  sims: async (n: number, rules: Rules = 'siege', k: { plushDensity?: number; crush?: number; plushFriction?: number } = {}) => { const sim = await import('./sim'); sim.knobs(k); return sim.simMatches(n, rules); },
+  botFort: () => botFort(makeDraw(rng), 30, rng),
+  sweep: async (fort: number, ammo: Ammo, taped = false, tear?: number) => {
+    const sim = await import('./sim');
+    if (tear) sim.setTear(tear);
+    return sim.summarise(sim.sweep(BOT_FORTS[fort], ammo, taped ? sim.tapePlushies(BOT_FORTS[fort]) : undefined));
+  },
   hand: () => match && { hand: match.hand, loaded: match.loaded, schedule: match.schedule },
   run: (sec: number) => { for (let i = 0; i < sec * 60; i++) tick(1 / 60); draw(); return `${screen} · ${barLeft.textContent}`; },
   state: () => ({ screen, volley: match?.volley, shooter: match?.shooter, shotsLeft: match?.shotsLeft, id: match?.rec.id, overlay: overlay.hidden ? '' : overlay.textContent?.trim().slice(0, 200) }),

@@ -23,6 +23,8 @@ interface RoomState {
   standing: [number, number]; destroyed: [number, number]; drowned: [unknown[], unknown[]];
   snaps: [unknown, unknown];
   shots: unknown[]; volleys: { volley: number; standing: { blue: number; green: number } }[];
+  /** Siege repairs: the volley being repaired for (0 = none), each seat's plan, and per fort what landed (from the attacker). */
+  repairFor: number; plans: [unknown, unknown]; repairs: [unknown[], unknown[]];
 }
 
 /** Volleys per match or round: the Siege has three; a Best of Three round and the race have one. */
@@ -31,6 +33,7 @@ const seat = (): SeatState => ({ player: null, conn: null, app: '', device: '', 
 const fresh = (): RoomState => ({
   phase: 'lobby', n: 0, draw: null, schedule: null, game: null, started: '', rules: 'siege', round: 1, wins: [0, 0], volley: 0, seats: [seat(), seat()],
   standing: [3, 3], destroyed: [0, 0], drowned: [[], []], snaps: [null, null], shots: [], volleys: [],
+  repairFor: 0, plans: [null, null], repairs: [[], []],
 });
 
 export class FortRoom extends Server<Env> {
@@ -61,7 +64,7 @@ export class FortRoom extends Server<Env> {
         if (m.rules !== 'rounds' || m.round <= 1 || s.rules !== 'rounds') s.wins = [0, 0];
         Object.assign(s, { phase: 'build', n: s.n + 1, draw: m.draw, schedule: m.schedule, game: null, started: new Date().toISOString(), volley: 0,
           rules: m.rules, round: m.round,
-          standing: [3, 3], destroyed: [0, 0], drowned: [[], []], snaps: [null, null], shots: [], volleys: [] });
+          standing: [3, 3], destroyed: [0, 0], drowned: [[], []], snaps: [null, null], shots: [], volleys: [], repairFor: 0, plans: [null, null], repairs: [[], []] });
         for (const st of s.seats) Object.assign(st, { fort: null, buildMs: 0, tests: 0, fired: [], live: [], done: 0, lava: 0 });
         this.persist(); this.sendRoom();
         await this.saveLog();
@@ -92,6 +95,7 @@ export class FortRoom extends Server<Env> {
         // the final records, plus any shot fired before a reload that this phone no longer knows about
         const steps = new Set(m.shots.map(x => (x as { step?: number }).step));
         s.shots.push(...s.seats[me].live.filter(x => !steps.has((x as { step?: number }).step)), ...m.shots);
+        if (m.repairs) s.repairs[other] = m.repairs;
         this.persist();
         if (s.rules === 'race' && m.standing === 0) await this.finish();   // the race ends the moment a fort is cleared
         else if (s.seats.every(x => x.done >= s.volley)) {
@@ -100,22 +104,34 @@ export class FortRoom extends Server<Env> {
         }
         await this.saveLog();
         return;
+      case 'repaired':
+        if (s.phase !== 'siege' || m.volley !== s.repairFor || s.plans[me]) return;
+        s.plans[me] = m.repair;
+        if (s.plans.every(Boolean)) this.nextVolley();
+        this.persist();
+        return;
       case 'lava':
         if (s.phase !== 'siege' || m.volley !== s.volley || s.seats[me].lava >= m.volley) return;
         s.seats[me].lava = m.volley; s.standing[other] = m.standing; s.destroyed[other] = m.destroyed; s.drowned[other] = m.drowned;
         if (s.seats.every(x => x.lava >= s.volley)) {
           s.volleys.push({ volley: s.volley, standing: { blue: s.standing[0], green: s.standing[1] } });
           if (s.standing.some(n => n === 0)) await this.finish();
-          else {
-            s.volley++;
-            for (const st of s.seats) { st.fired = []; st.live = []; }
-            this.broadcastMsg({ t: 'volley', volley: s.volley });
-          }
+          else if (s.rules === 'siege') { s.repairFor = s.volley + 1; s.plans = [null, null]; this.broadcastMsg({ t: 'repair', volley: s.repairFor }); }
+          else this.nextVolley();
         }
         this.persist();
         await this.saveLog();
         return;
     }
+  }
+
+  /** Both repairs are in (or the volley needs none): the next volley, with each phone's repairs routed to where they land. */
+  private nextVolley(): void {
+    const s = this.s;
+    s.volley++; s.repairFor = 0;
+    for (const st of s.seats) { st.fired = []; st.live = []; }
+    for (const i of [0, 1] as Seat[]) this.sendTo(i, { t: 'volley', volley: s.volley, repair: s.plans[1 - i] ?? undefined, mine: s.plans[i] ?? undefined });
+    s.plans = [null, null];
   }
 
   /** Seat a phone: back into its own seat if it was here before, else into a free one. */
@@ -134,6 +150,7 @@ export class FortRoom extends Server<Env> {
         resume: { snap: s.snaps[1 - me], fired: st.fired, done: st.done >= s.volley } } satisfies S2C));
       if (st.done >= s.volley && s.seats.every(x => x.done >= s.volley) && s.volley < volleys(s.rules) && st.lava < s.volley) conn.send(JSON.stringify({ t: 'rise', volley: s.volley } satisfies S2C));
     }
+    if (s.phase === 'siege' && s.repairFor && !s.plans[i]) conn.send(JSON.stringify({ t: 'repair', volley: s.repairFor } satisfies S2C));
     if (s.phase === 'result') conn.send(JSON.stringify(this.resultMsg()));
   }
 
@@ -171,6 +188,7 @@ export class FortRoom extends Server<Env> {
       device: s.seats.map(x => x.device).join(' | '), status, draw: s.draw, schedule: s.schedule,
       sides: s.seats.map((x, i) => ({ team: SEAT_TEAM[i], name: SEAT_NAME[i], bot: false, fort: x.fort, buildMs: x.buildMs, tests: x.tests, drowned: s.drowned[i] })),
       shots: s.shots, volleys: s.volleys,
+      repairs: s.repairs.flatMap((rs, i) => (rs as Record<string, unknown>[]).map(r => ({ by: SEAT_TEAM[i], ...r }))),
       result: res ? { standing: { blue: s.standing[0], green: s.standing[1] }, destroyed: { blue: s.destroyed[0], green: s.destroyed[1] }, winner, ms: Date.now() - Date.parse(s.started) } : undefined,
       winner, summary,
     };

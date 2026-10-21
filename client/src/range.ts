@@ -1,9 +1,9 @@
 // One range: a fort on its rug, the attacker's launcher in front of it, the lava around it.
 // Each fort has its own range and physics world, and it keeps its ruins between volleys.
 import { World, type Shape } from './physics';
-import { MATERIALS, RUG_W, bodyOf, priceOf, type Piece, type Plushie } from './fort';
+import { MATERIALS, RUG_W, TRAY, bodyOf, decorate, priceOf, turned, type Piece, type Plushie, type TrayKind } from './fort';
 import { P, drawPiece, drawPlush, rrPath } from './draw';
-import { AMMO, CRUSH_MOMENTUM, DRILL, JACK, SPLASH, drawAmmo, drawJack, drawTop, type Ammo } from './ammo';
+import { AMMO, CRUSH, DRILL, JACK, SPLASH, drawAmmo, drawJack, drawTop, type Ammo } from './ammo';
 import { FX_LIFE, drawFx, type Fx } from './fx';
 import { drawPlushSprite, drawRoom, drawRug } from './art';
 
@@ -43,6 +43,19 @@ export interface ShotRec {
 }
 interface Flight { ammo: Ammo; ids: number[]; tapped: boolean; drill: number; impactAt: number; lastSpeed: number }
 
+/** A repair between Siege volleys (04-systems §9): pieces dropped onto the ruins, and tape joining two touching pieces.
+ *  Patch x: the piece's left edge in cells from the rug's left. Tape: two piece indices and the seam point (world). */
+export interface Patch { kind: TrayKind; turned: boolean; x: number }
+export interface Repair { patches: Patch[]; tapes: [number, number, number, number][] }
+/** The piece a patch adds (the owner's phone builds the same one to draw its own fort). */
+export function patchPiece(p: Patch, index: number): Piece {
+  const made = { ...TRAY[p.kind].make(), x: 0, y: 0 } as Piece, piece = decorate(p.turned ? turned(made) ?? made : made, index);
+  return { ...piece, x: Math.max(-0.2, Math.min(RUG_W + 0.2 - piece.w, p.x)) };
+}
+/** Tape costs 1, at most 3 per repair, and tears at a hard hit: about a toy block falling two cells. */
+export const TAPE = { cost: 1, perRepair: 3, tear: 160 };
+interface Tape { a: number; b: number; joint: number; lx: number; ly: number; on: boolean }
+
 // Replays need the same shot to do the same thing twice. So the world only ever advances in counted steps:
 // everything that touches physics (fire, abilities, removing a knocked-off piece, slow motion) happens at a step
 // number, never at a wall-clock time, and a shot is fully described by its step, its pull, its ammo and its tap step.
@@ -60,6 +73,9 @@ export class Range {
   fx: Fx[] = [];
   trail: [number, number][] = [];
   lastTrail: [number, number][] = [];
+  tapes: Tape[] = [];
+  /** Repairs applied to this fort, with the step they were applied at (for the game log and replays). */
+  repairs: (Repair & { step: number })[] = [];
   private slow = 0;
   private acc = 0;
   private byId = new Map<number, Entry>();
@@ -130,6 +146,35 @@ export class Range {
     this.fx.push({ kind: 'splash', x, y, at: this.steps, r: SPLASH.radius });
   }
 
+  /** Apply a repair now: each patch drops gently onto whatever is under it, and tape welds two pieces as they are. */
+  repair(r: Repair): void {
+    const w = this.world;
+    for (const p of r.patches) {
+      const piece = patchPiece(p, this.entries.length);
+      piece.y = this.topUnder(piece.x, piece.x + piece.w) + 0.05;
+      const e: Entry = { piece, id: w.add(bodyOf(piece, 0)), lost: false, out: false, down: false, lostAt: 0, gone: false, wet: false };
+      this.entries.push(e); this.byId.set(e.id, e);
+    }
+    for (const [a, b, x, y] of r.tapes) {
+      const ea = this.entries[a], eb = this.entries[b];
+      if (!ea || !eb || ea.gone || eb.gone || a === b) continue;
+      const t = w.transform(ea.id), c = Math.cos(-t.angle), sn = Math.sin(-t.angle), dx = x - t.x, dy = y - t.y;
+      this.tapes.push({ a, b, joint: w.weld(ea.id, eb.id), lx: dx * c - dy * sn, ly: dx * sn + dy * c, on: true });
+    }
+    this.repairs.push({ step: this.steps, patches: r.patches.map(p => ({ ...p })), tapes: r.tapes.map(t => [...t] as [number, number, number, number]) });
+  }
+  /** The highest point of the fort over a column (where a patch lands). */
+  topUnder(x0: number, x1: number): number {
+    let top = 0;
+    for (const e of this.entries) {
+      if (e.gone || e.lost) continue;
+      const t = this.world.transform(e.id), hw = e.piece.w / 2, hh = e.piece.h / 2, c = Math.abs(Math.cos(t.angle)), sn = Math.abs(Math.sin(t.angle));
+      const ex = hw * c + hh * sn, ey = hw * sn + hh * c;
+      if (t.x + ex > x0 && t.x - ex < x1) top = Math.max(top, t.y + ey);
+    }
+    return top;
+  }
+
   /** Advance by real time dt. Slow motion only stretches time: each step stays the same physics either way.
    *  stopAt: never step past this step number (replays fire and tap exactly there). */
   tick(dt: number, lava: number, stopAt = Infinity): void {
@@ -148,6 +193,15 @@ export class Range {
     this.world.step(h); this.steps++;
     if (this.state === 'flight') { this.flightT += h; this.contacts(); }
     this.judge(lava, live);
+    for (const t of this.tapes) {   // tape tears at a hard hit
+      if (!t.on) continue;
+      const f = this.world.jointForce(t.joint);
+      if (f < 0) t.on = false;
+      else if (f > TAPE.tear) {
+        this.world.unweld(t.joint); t.on = false;
+        const p = this.tapePos(t); this.fx.push({ kind: 'rip', x: p[0], y: p[1], at: this.steps });
+      }
+    }
     if (this.fx.length) this.fx = this.fx.filter(f => this.steps - f.at < FX_LIFE[f.kind]);
   }
 
@@ -168,7 +222,7 @@ export class Range {
       const ammo = f.ids.includes(hit.a) ? hit.a : f.ids.includes(hit.b) ? hit.b : -1;
       if (ammo < 0) continue;
       const other = this.byId.get(ammo === hit.a ? hit.b : hit.a);
-      if (f.ammo !== 'balloon' && w.mass(ammo) * hit.speed >= CRUSH_MOMENTUM) crush(other);
+      if (f.ammo !== 'balloon' && w.mass(ammo) * hit.speed >= CRUSH.momentum) crush(other);
       if (f.impactAt < 0 && other) this.fx.push({ kind: 'hit', x: w.transform(ammo).x, y: w.transform(ammo).y, at: this.steps });
     }
     if (f.drill > 0) {   // drilling: dust flies until it stops or reaches the rug
@@ -257,13 +311,22 @@ export class Range {
       }),
       ammo: f && f.ids.length ? { kind: f.ammo, tapped: f.tapped, drilling: f.drill > 0, b: f.ids.map(id => { const t = this.world.transform(id); return [r3(t.x), r3(t.y), r3(t.angle)]; }) } : null,
       fx: this.fx.map(x => ({ ...x })),
+      tapes: this.tapes.filter(t => t.on).map(t => this.tapePos(t)),
     };
+  }
+  /** Where a tape sits in the world, and its angle (across the seam, along the line between the two pieces). */
+  private tapePos(t: Tape): [number, number, number] {
+    const a = this.world.transform(this.entries[t.a].id), b = this.entries[t.b].gone ? a : this.world.transform(this.entries[t.b].id);
+    const c = Math.cos(a.angle), sn = Math.sin(a.angle);
+    const r3 = (n: number) => Math.round(n * 1000) / 1000;
+    return [r3(a.x + t.lx * c - t.ly * sn), r3(a.y + t.lx * sn + t.ly * c), r3(Math.atan2(b.y - a.y, b.x - a.x))];
   }
 
   /** Rebuild a range from a snapshot (a phone that reloaded mid-match takes its target back from the room). */
   static fromSnap(blueprint: Piece[], team: 'blue' | 'green', s: Snap): Range {
     const r = new Range(blueprint, team);
     r.entries.forEach((e, i) => {
+      if (!s.p[i]) return;
       const [x, y, a, flags] = s.p[i];
       e.out = !!(flags & 1); e.down = e.out; e.lost = !!(flags & 2); e.wet = !!(flags & 8);
       if (flags & 4) { r.world.remove(e.id); e.gone = true; return; }
@@ -287,6 +350,8 @@ export interface Snap {
   p: [number, number, number, number, number][];
   ammo: { kind: Ammo; tapped: boolean; drilling: boolean; b: [number, number, number][] } | null;
   fx: Fx[];
+  /** Tape strips: x, y, angle (absent in snapshots from before repairs). */
+  tapes?: [number, number, number][];
 }
 export interface SceneOpts { pull: Pull | null; lava: number; boil: number; launcher: boolean; w: number; h: number; loaded?: Ammo | null }
 
@@ -305,6 +370,7 @@ export function drawScene(c: CanvasRenderingContext2D, cam: Cam, pieces: Piece[]
     if (s.aiming) band(c, cam, backTop, pp);
   }
   pieces.forEach((piece, i) => {
+    if (!s.p[i]) return;   // a patch the other phone hasn't streamed yet
     const [x, y, a, flags, fade] = s.p[i];
     if (flags & 4) return;
     c.save(); c.translate(sx(x), sy(y)); c.rotate(-a);
@@ -315,6 +381,7 @@ export function drawScene(c: CanvasRenderingContext2D, cam: Cam, pieces: Piece[]
     if (flags & 8) wet(c, piece, k, s.steps);
     c.restore();
   });
+  for (const [x, y, a] of s.tapes ?? []) drawTape(c, sx(x), sy(y), a, k);
   if (o.lava > 0) risenLava(c, cam, o.lava, o.boil);
   const f = s.ammo;
   if (f) for (const [x, y, a] of f.b) {
@@ -359,6 +426,17 @@ const lerpAngle = (a: number, b: number, f: number) => { let d = b - a; while (d
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/** Masking tape across a seam: a pale strip with torn ends. */
+export function drawTape(c: CanvasRenderingContext2D, x: number, y: number, a: number, k: number): void {
+  const w = k * 0.62, h = k * 0.2;
+  c.save(); c.translate(x, y); c.rotate(-a);
+  const p = new Path2D();
+  p.moveTo(-w / 2, -h / 2); for (let i = 0; i <= 4; i++) p.lineTo(-w / 2 + (i % 2 ? 2 : 0), -h / 2 + (h * i) / 4);
+  p.lineTo(w / 2, h / 2); for (let i = 4; i >= 0; i--) p.lineTo(w / 2 - (i % 2 ? 2 : 0), -h / 2 + (h * i) / 4);
+  p.closePath();
+  c.fillStyle = 'rgba(232,214,170,0.92)'; c.fill(p); c.lineWidth = 1; c.strokeStyle = 'rgba(46,42,51,0.45)'; c.stroke(p);
+  c.restore();
+}
 /** A soaked piece: darker, with a drip. */
 function wet(c: CanvasRenderingContext2D, p: Piece, k: number, steps: number): void {
   const w = p.w * k, h = p.h * k;

@@ -23,8 +23,8 @@ export const JACK = { arm: 0.22, thick: 0.05, density: 4, spread: [-0.24, -0.08,
 export const DRILL = { speed: 6, maxT: 1.0, spin: 40 };
 export const SPLASH = { radius: 2.6, impulse: 3.5, wetFriction: 0.12 };
 /** Crush rule: a plushie hit directly with at least this momentum (mass × approach speed) is out.
- *  A marble at about two thirds of full power, hitting directly (04-systems §13 said 60%; tuned with sim.ts). */
-export const CRUSH_MOMENTUM = 12;
+ *  A marble at about three quarters of full power, hitting directly (04-systems §13 said 60%; tuned with sim.ts). */
+export const CRUSH = { momentum: 14 };   // 12 at first; raised with the heavier plushies (sim.ts match runs)
 
 /** The Siege's ammo schedule: three volleys of two, every type at least once, never the same type twice in a volley.
  *  The same for both players, and known while building (so builders can read it: H14). */

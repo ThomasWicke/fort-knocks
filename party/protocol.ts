@@ -28,7 +28,9 @@ export type C2S =
   /** A shot just fired (relayed, so the other phone knows what's coming; the final record comes with 'done'). */
   | { t: 'shot'; shot: unknown; ammo: string }
   /** This phone's shots for the volley are done and its target is quiet. shots: their final records. */
-  | { t: 'done'; volley: number; standing: number; destroyed: number; shots: unknown[] }
+  | { t: 'done'; volley: number; standing: number; destroyed: number; shots: unknown[]; repairs?: unknown[] }
+  /** The Siege's repair of this phone's own fort (lands on the other phone, which simulates it, when the next volley starts). */
+  | { t: 'repaired'; volley: number; repair: unknown }
   /** The lava has risen on this phone's target. */
   | { t: 'lava'; volley: number; standing: number; destroyed: number; drowned: unknown[] };
 
@@ -38,6 +40,9 @@ export type S2C =
   | { t: 'siege'; forts: unknown[][]; volley: number; resume?: { snap: unknown | null; fired: string[]; done: boolean } }
   | { t: 'snap'; snap: unknown }
   | { t: 'shot'; shot: unknown; ammo: string }
-  | { t: 'volley'; volley: number }
+  /** The next volley. repair: the other player's repair, to land on the fort this phone simulates; mine: this phone's own. */
+  | { t: 'volley'; volley: number; repair?: unknown; mine?: unknown }
+  /** Siege: both repair their own fort before volley n. */
+  | { t: 'repair'; volley: number }
   | { t: 'rise'; volley: number }
   | { t: 'result'; standing: number[]; destroyed: number[]; winner: Seat | null; game: number | null; rules: string; round: number; wins: number[]; over: boolean };

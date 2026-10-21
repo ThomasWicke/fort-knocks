@@ -49,9 +49,13 @@ export function drawRoom(c: CanvasRenderingContext2D, cam: View, w: number, h: n
   const x = cam.sx(ROOM_X0), y = seamPy - seam * k, dw = iw * k, dh = ih * k;
   c.imageSmoothingQuality = 'high';
   c.drawImage(room, x, y, dw, dh);
-  // past the image's edges (wide or tall screens), its outermost pixels carry on, so there's no hard seam
-  if (x > 0) c.drawImage(room, 0, 0, 1, ih, 0, y, x + 1, dh);
-  if (x + dw < w) c.drawImage(room, iw - 1, 0, 1, ih, x + dw - 1, y, w - x - dw + 1, dh);
+  // past the image's edges (wide or zoomed-in screens) the room carries on mirrored, so there's no hard seam
+  if (x > 0 || x + dw < w) {
+    c.save(); c.scale(-1, 1);
+    if (x > 0) c.drawImage(room, -x, y, dw, dh);
+    if (x + dw < w) c.drawImage(room, -(x + 2 * dw), y, dw, dh);
+    c.restore();
+  }
   if (y > 0) c.drawImage(room, 0, 0, iw, 1, x, 0, dw, y + 1);
 }
 

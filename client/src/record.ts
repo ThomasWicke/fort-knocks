@@ -4,7 +4,7 @@
 import type { Draw, Piece, Plushie } from './fort';
 import type { Ammo } from './ammo';
 import type { Rules } from './modes';
-import type { ShotRec } from './range';
+import type { Repair, ShotRec } from './range';
 
 export type Team = 'blue' | 'green';
 /** A shot is the range's own record plus who fired it and how the aim went. */
@@ -34,6 +34,8 @@ export interface GameLog {
   schedule?: Ammo[][];
   sides: [SideLog, SideLog];
   shots: ShotLog[];
+  /** Siege repairs, per fort (by = the fort's owner), with the step of its range they landed at (replays apply them there). */
+  repairs?: ({ by: Team; step: number } & Repair)[];
   /** Plushies standing after each volley, once the lava has risen. */
   volleys: { volley: number; standing: Record<Team, number> }[];
   /** destroyed: the share of each team's own fort that was knocked off (by price, the tiebreak). */

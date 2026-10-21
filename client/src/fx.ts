@@ -3,9 +3,9 @@
 // Effects are timed in physics steps of their range, so slow motion slows them too.
 import { P } from './draw';
 
-export type FxKind = 'hit' | 'puff' | 'splash' | 'smoke' | 'scatter' | 'drill';
+export type FxKind = 'hit' | 'puff' | 'splash' | 'smoke' | 'scatter' | 'drill' | 'rip';
 export interface Fx { kind: FxKind; x: number; y: number; at: number; r?: number }
-export const FX_LIFE: Record<FxKind, number> = { hit: 30, puff: 50, splash: 48, smoke: 40, scatter: 24, drill: 30 };
+export const FX_LIFE: Record<FxKind, number> = { hit: 30, puff: 50, splash: 48, smoke: 40, scatter: 24, drill: 30, rip: 36 };
 
 /** A seeded random, so a stroke keeps its shape for one boil frame and gets a new wobble on the next. */
 function rand(seed: number): () => number {
@@ -53,6 +53,8 @@ export function drawFx(c: CanvasRenderingContext2D, f: Fx, px: number, py: numbe
     for (let i = 0; i < 14; i++) { const a = (i / 14) * Math.PI * 2, d = R * (0.5 + 0.6 * ((i * 37) % 10) / 10); c.globalAlpha = fade; c.beginPath(); c.arc(Math.cos(a) * d, Math.sin(a) * d * 0.75 + t * t * k * 1.5, Math.max(2, k * 0.08), 0, Math.PI * 2); c.fill(); }
   } else if (f.kind === 'scatter') {   // speed lines where the jacks fan out
     for (let i = 0; i < 5; i++) { const a = -0.6 + i * 0.3, d0 = k * 0.3, d1 = k * (0.8 + t); c.globalAlpha = fade; crayonLine(c, [[Math.cos(a) * d0, Math.sin(a) * d0], [Math.cos(a) * d1, Math.sin(a) * d1]], P.graphite, 2, r); }
+  } else if (f.kind === 'rip') {   // tape tearing: a pale zigzag flying apart
+    for (const s of [-1, 1]) { const d = k * (0.2 + t * 0.6); c.globalAlpha = fade; crayonLine(c, [[s * d, -k * 0.1], [s * (d + k * 0.15), k * 0.08], [s * (d + k * 0.3), -k * 0.06]], '#D9C79A', 3, r); }
   } else if (f.kind === 'drill') {   // dust spinning off the drilling top
     for (let i = 0; i < 4; i++) { const s = i % 2 ? 1 : -1, y = (i - 1.5) * k * 0.25; c.globalAlpha = fade; crayonLine(c, [[s * k * 0.45, y], [s * k * (0.9 + t * 0.5), y - k * 0.2]], P.wood2, 2.5, r); }
   }

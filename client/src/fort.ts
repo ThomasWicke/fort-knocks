@@ -19,7 +19,7 @@ export const MATERIALS: Record<Family | 'marble' | 'floor', Material> = {
   domino: { density: 0.6, friction: 0.6, restitution: 0.05 },
   block: { density: 1.0, friction: 0.8, restitution: 0.05 },
   book: { density: 2.0, friction: 0.8, restitution: 0.02 },
-  plush: { density: 0.5, friction: 0.9, restitution: 0.0 },
+  plush: { density: 2.0, friction: 0.9, restitution: 0.0 },   // bean-filled; was 0.5: bot-vs-bot Sieges ended early with every fort wiped (sim.ts)
   marble: { density: 4.0, friction: 0.3, restitution: 0.2 },   // was 8: one shot swept all three plushies off (playtest 1)
   floor: { density: 0, friction: 0.8, restitution: 0 },
 };

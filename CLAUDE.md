@@ -32,7 +32,10 @@ npx wrangler d1 execute fort-knocks --remote --command "SELECT id, created_at, s
 On the Vite dev server and on localhost, `window.__fk` drives the game without a visible tab:
 - `__fk.start('bot' | 'pass')`, `__fk.load(i)` (a bot fort into the builder), `__fk.ready()`, `__fk.go()` (pass screens)
 - `__fk.fire(pullX, pullY, ammo?)` (pull in cells, max 2), `__fk.tap()` (the ammo's ability), `__fk.hand()`, `__fk.run(seconds)`, `__fk.state()`
-- `__fk.sweep(fortIndex, ammo)`: fire one ammo type at a bot fort over an angle × power grid (balance)
+- `__fk.sweep(fortIndex, ammo, taped?, tear?)`: fire one ammo type at a hand-made fort over an angle × power grid (balance)
+- `__fk.sims(n, rules, knobs?)`: n whole bot-vs-bot matches (wipes, early ends, tiebreaks); `__fk.botFort()`: one generated fort
+- `__fk.start('bot' | 'pass', rules?)`, `__fk.host(rules)` (open an online room), `__fk.match()`, `__fk.online()`
+- Long sweeps belong in a tab of the built game (`npm run dev:worker`, localhost:8787): the Vite dev server reloads the page on every code change.
 - `__fk.log()` (the current game log), `__fk.watch(log)` (replay a log), `__fk.watching()` (replay progress and drift)
 
 The Vite dev server doesn't save games, because it has no API. Built code does: deployed, or `npm run dev:worker` into the local D1.
@@ -44,6 +47,7 @@ The Vite dev server doesn't save games, because it has no API. Built code does: 
   - `src/build.ts`: the build screen. `src/range.ts`: one fort's world and the launcher, stepped deterministically.
   - `src/main.ts`: the match flow, input, replays (`?watch=<id>`). `src/record.ts`: the game log. `src/games.ts`: the past-games page.
   - `src/ammo.ts`: the four ammo types, the schedule, their drawings. `src/fx.ts`: crayon effects. `src/sim.ts`: headless balance sweeps (`__fk.sweep(fort, ammo)` in dev).
+  - `src/modes.ts`: the three modes as configurations. `src/repair.ts`: the Siege's repair screen. `src/bot.ts`: the bot's fort builder, aim and taps.
   - `src/art.ts`: the illustrated room, rug and plushie sprites, placed in world coordinates. The images are in `client/public/art/`, made by `dev/art/make_art.py` from `docs/concept/game-art/` and `docs/concept/sprites/`.
 - `worker.ts`: the Cloudflare Worker. `/parties/rooms/<code>` are the online rooms, `/api/games` the game log on D1, everything else comes from `dist/`. `migrations/`: the D1 schema.
 - `party/`: the online room. `protocol.ts` (the messages, shared with the client), `room.ts` (the Durable Object), `games-db.ts` (game-log writes). `client/src/party.ts` is the phone's side.

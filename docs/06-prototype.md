@@ -157,4 +157,47 @@ All three run on one match engine (`client/src/modes.ts`), as Phase 2 asked. The
 - **The build clocks are soft.** They count down and say "time's up", but nothing is forced: a forced Ready would need an automatic fix for broken rules. If friends dawdle, the data will show it.
 - **In the race your own fort sits in a corner window,** live (against the bot) or streamed (online), so you can follow what happens to it.
 - **Best of Three logs each round as its own game,** so every round can be replayed.
-- **Not yet: the Siege's repair** (patch and tape between volleys). It's the next step.
+
+## 10. The Siege's repair (M4, part 2)
+Between volleys both players repair their own fort for 20 seconds, out of the other's sight (pass and play hands the phone over, online each phone repairs at once). Every action is a tap, because ruins are no place for precise dragging on a phone:
+- **Patch:** tap a piece in the box, then tap over the fort. The piece drops there onto whatever is below, gently, from just above the ruins.
+  - Pieces come from what the draw left after building.
+  - Money comes from the reserve: the budget left from building, plus 3 for every repair.
+- **Tape:** tap a seam between two pieces to tape it, 1 each, at most 3 per repair. Tape is a weld joint that tears when it carries more than 160 N, about a toy block falling two cells.
+- **Hidden until the volley starts:** patches show as dashed ghosts and tape as a strip. Both land when the next volley begins, on the phone that simulates that fort. Online, the room routes each repair to the other phone.
+- **Replays include repairs:** each repair is logged with the step it landed at, and the replay lands it at the same step.
+- **The bot repairs too:** it tapes each standing plushie to what it stands on, while its reserve lasts.
+
+**Measured** with `sim.ts`, taping all three plushies to their supports (a whole repair's allowance) against all four ammo types and the three hand-made forts. Shots taking out at least one plushie, of 900:
+
+| Untaped | Tear at 80 N | Tear at 160 N |
+|---|---|---|
+| 326 | 252 | 227 |
+
+That's a real defence (−30%), not a wall, so it stays at 160 N.
+
+## 11. Bots and the balance harness (M5)
+- **The bot builds from the real draw and budget** (`client/src/bot.ts`):
+  - three towers, one per third of the rug, each lifting a plushie with one of eight recipes the draw allows
+  - then the rest of the budget on pieces between the towers
+  - every candidate checked against the build rules and a 3-second settle, and the most expensive standing one wins
+  - about 0.1 s per fort; the three hand-made forts are only a fallback
+  - in Best of Three's first round it builds within 12, where the old forts cost 30
+- **The bot shoots** at a random standing plushie with up to ±7% power and ±3.5° of error. It picks its ammo order, taps abilities at sensible moments, and in the race fires on its own reload.
+- **Balance harness:** `sim.ts` now runs whole matches, bot against bot from the same draw (`__fk.sims(n, rules, knobs)`). It reports how often a tie decides, how often a fort is wiped, whether the first shooter has an edge, and how often a match ends early.
+
+**First finding (20 Sieges per row, same draws):** attack beat defence. Every match ended with a fort wiped, and most ended before volley 3, so the three-volley arc rarely happened. Thomas's four real games show the same: all were over after volley 2.
+
+| Plushie weight | Crush at | A fort wiped | Ended before volley 3 | Decided by tiebreak |
+|---|---|---|---|---|
+| 0.5 (half a block) | 12 | 100% | 65% | 40% |
+| 1.2 | 12 | 75% | 45% | 40% |
+| 1.2 | 16 | 80% | 40% | 40% |
+| 2.0 | 16 | 85% | 50% | 10% |
+
+**Changed:**
+- Plushies are bean-filled: twice the weight of a toy block (density 2.0).
+- A crush needs momentum 14, a marble at about three quarters of full power.
+- The bot aims a little less precisely (±9% power, ±4.6°), closer to people.
+
+With all three, 30 Sieges give **80% wipes, 47% early ends, 30% tiebreaks**, without repairs (the sim doesn't repair yet; tape alone cut plushie hits by 30%). The samples are small and the bot is a sharper shot than people (Thomas mostly fires flat at full power), so the friend matches decide the rest. Best of Three, from 20 sims: a fort wiped in 20%, tiebreaks 35%.

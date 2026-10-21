@@ -32,6 +32,8 @@ export class World {
   private shapes: ShapeId[][] = [];
   private owner = new Map<number, number>();   // shape index → body number, for contact events
   private listening = new Set<number>();   // bodies with `events`
+  private joints: (ReturnType<B2['b2CreateWeldJoint']> | null)[] = [];
+  private jointBodies: [number, number][] = [];
   /** Contacts that began during the last step, as pairs of body numbers (only pairs with an `events` body). */
   begins: [number, number][] = [];
   /** Hard hits during the last step, with the speed the two bodies approached at (m/s). */
@@ -73,6 +75,7 @@ export class World {
   remove(id: number): void {
     const body = this.bodies[id];
     if (!body) return;
+    this.jointBodies.forEach(([a, b], j) => { if (a === id || b === id) this.joints[j] = null; });   // Box2D destroys them with the body
     for (const s of this.shapes[id]) if (this.owner.get(s.index1) === id) this.owner.delete(s.index1);
     this.listening.delete(id);
     this.b.b2DestroyBody(body); this.bodies[id] = null; this.shapes[id] = [];
@@ -123,8 +126,28 @@ export class World {
   setFriction(id: number, f: number): void { for (const s of this.shapes[id]) this.b.b2Shape_SetFriction(s, f); }
   mass(id: number): number { return this.b.b2Body_GetMass(this.bodies[id]!); }
 
+  /** Weld two bodies together as they are now (tape). Returns the joint number. */
+  weld(a: number, b: number): number {
+    const B = this.b, jd = B.b2DefaultWeldJointDef(), base = jd.base;
+    const id = new B.b2Transform(); id.p = new B.b2Vec2(0, 0); id.q = B.b2MakeRot(0);
+    base.bodyIdA = this.bodies[a]!; base.bodyIdB = this.bodies[b]!;
+    base.localFrameA = id;
+    base.localFrameB = B.b2InvMulTransforms(B.b2Body_GetTransform(this.bodies[b]!), B.b2Body_GetTransform(this.bodies[a]!));
+    jd.base = base; jd.linearHertz = 0; jd.angularHertz = 0;
+    this.joints.push(B.b2CreateWeldJoint(this.world, jd)); this.jointBodies.push([a, b]);
+    return this.joints.length - 1;
+  }
+  /** The force a joint carries (N), or -1 if it's gone. */
+  jointForce(j: number): number {
+    const jt = this.joints[j];
+    if (!jt) return -1;
+    const f = this.b.b2Joint_GetConstraintForce(jt);
+    return Math.hypot(f.x, f.y);
+  }
+  unweld(j: number): void { const jt = this.joints[j]; if (jt) { this.b.b2DestroyJoint(jt, true); this.joints[j] = null; } }
+
   awake(id: number): boolean { const body = this.bodies[id]; return !!body && this.b.b2Body_IsAwake(body); }
   exists(id: number): boolean { return !!this.bodies[id]; }
 
-  destroy(): void { this.b.b2DestroyWorld(this.world); this.bodies = []; this.shapes = []; this.owner.clear(); this.listening.clear(); }
+  destroy(): void { this.b.b2DestroyWorld(this.world); this.bodies = []; this.shapes = []; this.owner.clear(); this.listening.clear(); this.joints = []; this.jointBodies = []; }
 }

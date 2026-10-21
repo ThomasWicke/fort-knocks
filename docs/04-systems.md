@@ -166,10 +166,10 @@ The fiction is a rainy afternoon, with three games the siblings play:
 |---|---|---|
 | Plushie minimum height | ~~3~~ **2 cells** (playtest 1) | 3 used up most of the budget; the rising lava already punishes low plushies |
 | Funnel | ~~45°~~ **30° from vertical**, from the feet (prototype) | 45° kept two tall towers from standing side by side |
-| Crushing hit | a marble at about 60% power, hitting directly | Direct hits should count, but bumps shouldn't |
+| Crushing hit | ~~a marble at about 60% power~~ momentum 14: a marble at about three quarters of full power, hitting directly (tuned in Phase 6) | Direct hits should count, but bumps shouldn't |
 | Tape tears at | about a toy block falling 2 cells | Survives wobbling, not a real hit |
 | Preview | 35% of the arc | Somewhere between Angry Birds (none) and a full guide |
-| Weights (relative) | card 0.2 · domino 0.6 · block 1 · plushie 0.5 · book 3 | Matches what people expect from real objects |
+| Weights (relative) | card 0.2 · domino 0.6 · block 1 · plushie ~~0.5~~ 2 (bean-filled, Phase 6 sims) · book 3 | Matches what people expect from real objects |
 
 ## 14. New hypotheses for Phase 6
 - **H10:** rising lava feels like pressure, not unfairness.
